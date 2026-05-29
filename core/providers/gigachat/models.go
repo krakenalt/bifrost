@@ -69,6 +69,8 @@ func toGigaChatSupportedMethods(modelType string) []string {
 			string(schemas.ChatCompletionRequest),
 			string(schemas.ChatCompletionStreamRequest),
 		}
+	case "embedder", "embedding", "embeddings":
+		return []string{string(schemas.EmbeddingRequest)}
 	default:
 		return nil
 	}

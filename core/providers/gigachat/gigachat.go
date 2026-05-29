@@ -309,6 +309,96 @@ func (provider *GigaChatProvider) listModelsByKeyWithRefresh(ctx *schemas.Bifros
 	return response, nil
 }
 
+func (provider *GigaChatProvider) embeddingWithRefresh(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostEmbeddingRequest, forceRefresh bool) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
+	ctx = ensureGigaChatContext(ctx)
+	if request == nil {
+		return nil, providerUtils.NewBifrostOperationError("embedding request is nil", nil)
+	}
+
+	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
+		ctx,
+		request,
+		func() (providerUtils.RequestBodyWithExtraParams, error) {
+			return ToGigaChatEmbeddingRequest(request)
+		})
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	headers, bifrostErr := provider.buildAuthHeaders(ctx, key)
+	if forceRefresh {
+		headers, bifrostErr = provider.refreshAuthHeaders(ctx, key)
+	}
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	client, clientErr := buildGigaChatTLSClient(provider.client, key.GigaChatKeyConfig)
+	if clientErr != nil {
+		return nil, newGigaChatConfigurationError(clientErr.Error())
+	}
+
+	req := fasthttp.AcquireRequest()
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseRequest(req)
+	defer fasthttp.ReleaseResponse(resp)
+
+	for headerName, headerValue := range headers {
+		req.Header.Set(headerName, headerValue)
+	}
+	req.SetRequestURI(buildGigaChatRequestURL(ctx, resolveBaseURL(key, provider.networkConfig), gigaChatAPIVersionV1, "/embeddings", provider.customProviderConfig, schemas.EmbeddingRequest))
+	req.Header.SetMethod(http.MethodPost)
+	req.Header.SetContentType("application/json")
+	req.Header.Set("Accept", "application/json")
+	req.SetBody(jsonData)
+
+	sendBackRawRequest := providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest)
+	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
+
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, client, req, resp)
+	defer wait()
+	if bifrostErr != nil {
+		bifrostErr.ExtraFields.Provider = provider.GetProviderKey()
+		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, nil, sendBackRawRequest, sendBackRawResponse)
+	}
+
+	providerResponseHeaders := providerUtils.ExtractProviderResponseHeaders(resp)
+	ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerResponseHeaders)
+
+	if resp.StatusCode() != fasthttp.StatusOK {
+		bifrostErr := ParseGigaChatError(resp, provider.GetProviderKey())
+		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, resp.Body(), sendBackRawRequest, sendBackRawResponse)
+	}
+
+	responseBody, err := providerUtils.CheckAndDecodeBody(resp)
+	if err != nil {
+		bifrostErr := newGigaChatProviderResponseError("failed to decode GigaChat embeddings response", err)
+		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, resp.Body(), sendBackRawRequest, sendBackRawResponse)
+	}
+
+	gigaChatResponse := &GigaChatEmbeddingResponse{}
+	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(responseBody, gigaChatResponse, jsonData, sendBackRawRequest, sendBackRawResponse)
+	if bifrostErr != nil {
+		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, responseBody, sendBackRawRequest, sendBackRawResponse)
+	}
+
+	response := ToBifrostEmbeddingResponse(provider.GetProviderKey(), gigaChatResponse)
+	if response == nil {
+		return nil, newGigaChatProviderResponseError("GigaChat embeddings response is empty", nil)
+	}
+	response.BackfillParams(request)
+	response.ExtraFields.Latency = latency.Milliseconds()
+	response.ExtraFields.ProviderResponseHeaders = providerResponseHeaders
+	if sendBackRawRequest {
+		response.ExtraFields.RawRequest = rawRequest
+	}
+	if sendBackRawResponse {
+		response.ExtraFields.RawResponse = rawResponse
+	}
+
+	return response, nil
+}
+
 // ListModels performs a v1 models request to GigaChat.
 func (provider *GigaChatProvider) ListModels(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
 	if err := providerUtils.CheckOperationAllowed(schemas.GigaChat, provider.customProviderConfig, schemas.ListModelsRequest); err != nil {
@@ -380,9 +470,17 @@ func (provider *GigaChatProvider) CountTokens(_ *schemas.BifrostContext, _ schem
 	return nil, provider.unsupported(schemas.CountTokensRequest)
 }
 
-// Embedding is not supported by the GigaChat provider skeleton.
-func (provider *GigaChatProvider) Embedding(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
-	return nil, provider.unsupported(schemas.EmbeddingRequest)
+// Embedding sends a non-streaming v1 embeddings request to GigaChat.
+func (provider *GigaChatProvider) Embedding(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
+	if err := providerUtils.CheckOperationAllowed(schemas.GigaChat, provider.customProviderConfig, schemas.EmbeddingRequest); err != nil {
+		return nil, err
+	}
+
+	response, bifrostErr := provider.embeddingWithRefresh(ctx, key, request, false)
+	if isGigaChatUnauthorizedError(bifrostErr) {
+		return provider.embeddingWithRefresh(ctx, key, request, true)
+	}
+	return response, bifrostErr
 }
 
 // Rerank is not supported by the GigaChat provider skeleton.

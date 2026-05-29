@@ -1,3 +1,4 @@
+- feat: implement GigaChat embeddings API
 - feat: implement GigaChat models API
 - feat: implement GigaChat v1 chat streaming
 - feat: implement GigaChat v1 chat completions

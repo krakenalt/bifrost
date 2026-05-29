@@ -131,6 +131,46 @@ type GigaChatModel struct {
 	Type    string `json:"type,omitempty"`
 }
 
+// # EMBEDDING TYPES
+
+// GigaChatEmbeddingRequest is the v1 embeddings request body.
+type GigaChatEmbeddingRequest struct {
+	Model string                  `json:"model"`
+	Input *schemas.EmbeddingInput `json:"input"`
+
+	ExtraParams map[string]interface{} `json:"-"`
+}
+
+// GetExtraParams returns provider-specific passthrough fields.
+func (request *GigaChatEmbeddingRequest) GetExtraParams() map[string]interface{} {
+	if request == nil || request.ExtraParams == nil {
+		return make(map[string]interface{}, 0)
+	}
+	return request.ExtraParams
+}
+
+// GigaChatEmbeddingResponse is the v1 embeddings response body.
+type GigaChatEmbeddingResponse struct {
+	Object string                  `json:"object"`
+	Data   []GigaChatEmbeddingData `json:"data"`
+	Model  string                  `json:"model"`
+	Usage  *GigaChatEmbeddingUsage `json:"usage,omitempty"`
+}
+
+// GigaChatEmbeddingData is a single embedding vector returned by GigaChat.
+type GigaChatEmbeddingData struct {
+	Object    string                  `json:"object,omitempty"`
+	Embedding []float64               `json:"embedding"`
+	Index     int                     `json:"index"`
+	Usage     *GigaChatEmbeddingUsage `json:"usage,omitempty"`
+}
+
+// GigaChatEmbeddingUsage describes token usage for embedding generation.
+type GigaChatEmbeddingUsage struct {
+	PromptTokens int `json:"prompt_tokens,omitempty"`
+	TotalTokens  int `json:"total_tokens,omitempty"`
+}
+
 // # ERROR TYPES
 
 // GigaChatErrorResponse is the common REST API error shape used by GigaChat.

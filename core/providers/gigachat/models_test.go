@@ -50,8 +50,9 @@ func testGigaChatListModelsConverterMapsResponse(t *testing.T) {
 	if fmt.Sprint(converted.Data[0].SupportedMethods) != fmt.Sprint(wantMethods) {
 		t.Fatalf("supported methods mismatch: got %#v, want %#v", converted.Data[0].SupportedMethods, wantMethods)
 	}
-	if len(converted.Data[1].SupportedMethods) != 0 {
-		t.Fatalf("embedder methods should stay empty until embeddings are implemented, got %#v", converted.Data[1].SupportedMethods)
+	wantEmbeddingMethods := []string{string(schemas.EmbeddingRequest)}
+	if fmt.Sprint(converted.Data[1].SupportedMethods) != fmt.Sprint(wantEmbeddingMethods) {
+		t.Fatalf("embedder supported methods mismatch: got %#v, want %#v", converted.Data[1].SupportedMethods, wantEmbeddingMethods)
 	}
 }
 
