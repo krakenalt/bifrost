@@ -57,6 +57,16 @@ func ToGigaChatResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) (*G
 	return gigaChatReq, nil
 }
 
+// ToGigaChatResponsesStreamRequest converts a Bifrost Responses request to a streaming GigaChat v2 request.
+func ToGigaChatResponsesStreamRequest(bifrostReq *schemas.BifrostResponsesRequest) (*GigaChatResponsesRequest, error) {
+	gigaChatReq, err := ToGigaChatResponsesRequest(bifrostReq)
+	if err != nil {
+		return nil, err
+	}
+	gigaChatReq.Stream = schemas.Ptr(true)
+	return gigaChatReq, nil
+}
+
 // ToBifrostResponsesResponse converts a GigaChat v2 chat completions response to Bifrost Responses format.
 func ToBifrostResponsesResponse(providerName schemas.ModelProvider, response *GigaChatResponsesResponse) *schemas.BifrostResponsesResponse {
 	if response == nil {
@@ -105,6 +115,74 @@ func ToBifrostResponsesResponse(providerName schemas.ModelProvider, response *Gi
 	bifrostResponse.ProviderExtraFields = toBifrostGigaChatResponsesProviderExtraFields(response)
 
 	return bifrostResponse
+}
+
+// ToBifrostResponsesStreamResponse converts a GigaChat v2 SSE chunk to Bifrost Responses stream events.
+func ToBifrostResponsesStreamResponse(providerName schemas.ModelProvider, response *GigaChatChatStreamResponse, state *schemas.ChatToResponsesStreamState) []*schemas.BifrostResponsesStreamResponse {
+	if response == nil || state == nil {
+		return nil
+	}
+
+	chatResponse := ToBifrostChatStreamResponse(providerName, response)
+	if chatResponse == nil {
+		return nil
+	}
+	ensureGigaChatResponsesStreamLifecycleRole(chatResponse, state)
+
+	events := chatResponse.ToBifrostResponsesStreamResponse(state)
+	for _, event := range events {
+		if event != nil {
+			event.ExtraFields.Provider = providerName
+			event.ExtraFields.RequestType = schemas.ResponsesStreamRequest
+		}
+	}
+	return events
+}
+
+func ensureGigaChatResponsesStreamLifecycleRole(response *schemas.BifrostChatResponse, state *schemas.ChatToResponsesStreamState) {
+	if response == nil || state == nil || state.HasEmittedCreated || len(response.Choices) == 0 {
+		return
+	}
+	choice := response.Choices[0]
+	if choice.ChatStreamResponseChoice == nil || choice.ChatStreamResponseChoice.Delta == nil {
+		return
+	}
+	delta := choice.ChatStreamResponseChoice.Delta
+	if delta.Role != nil {
+		return
+	}
+	hasContent := delta.Content != nil && *delta.Content != ""
+	if hasContent || len(delta.ToolCalls) > 0 {
+		role := string(schemas.ChatMessageRoleAssistant)
+		delta.Role = &role
+	}
+}
+
+func updateGigaChatResponsesStreamUsage(target *schemas.BifrostLLMUsage, source *schemas.BifrostLLMUsage) {
+	if target == nil || source == nil {
+		return
+	}
+	if source.PromptTokens > target.PromptTokens {
+		target.PromptTokens = source.PromptTokens
+	}
+	if source.CompletionTokens > target.CompletionTokens {
+		target.CompletionTokens = source.CompletionTokens
+	}
+	if source.TotalTokens > target.TotalTokens {
+		target.TotalTokens = source.TotalTokens
+	}
+	if calculatedTotal := target.PromptTokens + target.CompletionTokens; calculatedTotal > target.TotalTokens {
+		target.TotalTokens = calculatedTotal
+	}
+	if source.PromptTokensDetails != nil {
+		target.PromptTokensDetails = source.PromptTokensDetails
+	}
+	if source.CompletionTokensDetails != nil {
+		target.CompletionTokensDetails = source.CompletionTokensDetails
+	}
+	if source.Cost != nil {
+		target.Cost = source.Cost
+	}
 }
 
 func toBifrostGigaChatResponsesChoiceOutput(choice GigaChatResponsesChoice, fallbackMessageID *string) []schemas.ResponsesMessage {

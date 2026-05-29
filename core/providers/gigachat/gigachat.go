@@ -2,6 +2,8 @@ package gigachat
 
 import (
 	"context"
+	"errors"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -489,6 +491,214 @@ func (provider *GigaChatProvider) responsesWithRefresh(ctx *schemas.BifrostConte
 	return response, nil
 }
 
+func (provider *GigaChatProvider) responsesStreamWithRefresh(
+	ctx *schemas.BifrostContext,
+	postHookRunner schemas.PostHookRunner,
+	postHookSpanFinalizer func(context.Context),
+	key schemas.Key,
+	request *schemas.BifrostResponsesRequest,
+	forceRefresh bool,
+) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	ctx = ensureGigaChatContext(ctx)
+	if request == nil {
+		return nil, providerUtils.NewBifrostOperationError("responses stream request is nil", nil)
+	}
+	providerUtils.SetStreamIdleTimeoutIfEmpty(ctx, provider.networkConfig.StreamIdleTimeoutInSeconds)
+
+	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
+		ctx,
+		request,
+		func() (providerUtils.RequestBodyWithExtraParams, error) {
+			return ToGigaChatResponsesStreamRequest(request)
+		})
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	headers, bifrostErr := provider.buildAuthHeaders(ctx, key)
+	if forceRefresh {
+		headers, bifrostErr = provider.refreshAuthHeaders(ctx, key)
+	}
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	client, clientErr := buildGigaChatTLSClient(provider.streamingClient, key.GigaChatKeyConfig)
+	if clientErr != nil {
+		return nil, newGigaChatConfigurationError(clientErr.Error())
+	}
+
+	req := fasthttp.AcquireRequest()
+	resp := fasthttp.AcquireResponse()
+	resp.StreamBody = true
+	defer fasthttp.ReleaseRequest(req)
+
+	for headerName, headerValue := range headers {
+		req.Header.Set(headerName, headerValue)
+	}
+	req.SetRequestURI(buildGigaChatRequestURL(ctx, resolveBaseURL(key, provider.networkConfig), gigaChatAPIVersionV2, "/chat/completions", provider.customProviderConfig, schemas.ResponsesStreamRequest))
+	req.Header.SetMethod(http.MethodPost)
+	req.Header.SetContentType("application/json")
+	req.Header.Set("Accept", "text/event-stream")
+	req.Header.Set("Cache-Control", "no-cache")
+	req.SetBody(jsonData)
+
+	sendBackRawRequest := providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest)
+	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
+
+	activeClient := providerUtils.PrepareResponseStreaming(ctx, client, resp)
+	startTime := time.Now()
+	if err := activeClient.Do(req, resp); err != nil {
+		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
+		if errors.Is(err, context.Canceled) {
+			return nil, providerUtils.EnrichError(ctx, &schemas.BifrostError{
+				IsBifrostError: false,
+				Error: &schemas.ErrorField{
+					Type:    schemas.Ptr(schemas.RequestCancelled),
+					Message: schemas.ErrRequestCancelled,
+					Error:   err,
+				},
+			}, jsonData, nil, sendBackRawRequest, sendBackRawResponse)
+		}
+		if errors.Is(err, fasthttp.ErrTimeout) || errors.Is(err, context.DeadlineExceeded) {
+			return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, err), jsonData, nil, sendBackRawRequest, sendBackRawResponse)
+		}
+		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderDoRequest, err), jsonData, nil, sendBackRawRequest, sendBackRawResponse)
+	}
+
+	providerName := provider.GetProviderKey()
+	providerResponseHeaders := providerUtils.ExtractProviderResponseHeaders(resp)
+	ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerResponseHeaders)
+
+	if resp.StatusCode() != fasthttp.StatusOK {
+		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
+		providerUtils.MaterializeStreamErrorBody(ctx, resp)
+		bifrostErr := ParseGigaChatError(resp, providerName)
+		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, nil, sendBackRawRequest, sendBackRawResponse)
+	}
+
+	if providerUtils.SetupStreamingPassthrough(ctx, resp) {
+		responseChan := make(chan *schemas.BifrostStreamChunk)
+		close(responseChan)
+		return responseChan, nil
+	}
+
+	responseChan := make(chan *schemas.BifrostStreamChunk, schemas.DefaultStreamBufferSize)
+
+	go func() {
+		defer providerUtils.EnsureStreamFinalizerCalled(ctx, postHookSpanFinalizer)
+		defer func() {
+			if ctx.Err() == context.Canceled {
+				providerUtils.HandleStreamCancellation(ctx, postHookRunner, responseChan, provider.logger, postHookSpanFinalizer, jsonData)
+			} else if ctx.Err() == context.DeadlineExceeded {
+				providerUtils.HandleStreamTimeout(ctx, postHookRunner, responseChan, provider.logger, postHookSpanFinalizer, jsonData)
+			}
+			close(responseChan)
+		}()
+		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
+
+		reader, releaseGzip := providerUtils.DecompressStreamBody(resp)
+		defer releaseGzip()
+
+		reader, stopIdleTimeout := providerUtils.NewIdleTimeoutReader(reader, resp.BodyStream(), providerUtils.GetStreamIdleTimeout(ctx), ctx)
+		defer stopIdleTimeout()
+
+		stopCancellation := providerUtils.SetupStreamCancellation(ctx, resp.BodyStream(), provider.logger)
+		defer stopCancellation()
+
+		if providerUtils.DrainNonSSEStreamResponse(resp) {
+			ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+			providerUtils.ProcessAndSendError(ctx, postHookRunner, errors.New("provider returned non-SSE response for streaming request"), responseChan, provider.logger, postHookSpanFinalizer)
+			return
+		}
+
+		sseReader := providerUtils.GetSSEDataReader(ctx, reader)
+		streamState := schemas.AcquireChatToResponsesStreamState()
+		defer schemas.ReleaseChatToResponsesStreamState(streamState)
+
+		usage := &schemas.BifrostLLMUsage{}
+		usageSeen := false
+		lastChunkTime := startTime
+		var pendingFinalEvent *schemas.BifrostResponsesStreamResponse
+
+		for {
+			if ctx.Err() != nil {
+				return
+			}
+
+			data, readErr := sseReader.ReadDataLine()
+			if readErr != nil {
+				if ctx.Err() != nil {
+					return
+				}
+				if readErr != io.EOF {
+					ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+					if provider.logger != nil {
+						provider.logger.Warn("Error reading stream: %v", readErr)
+					}
+					providerUtils.ProcessAndSendError(ctx, postHookRunner, readErr, responseChan, provider.logger, postHookSpanFinalizer)
+					return
+				}
+				break
+			}
+
+			if bifrostErr := parseGigaChatStreamError(data, providerName); bifrostErr != nil {
+				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+				providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, providerUtils.EnrichError(ctx, bifrostErr, jsonData, data, sendBackRawRequest, sendBackRawResponse), responseChan, provider.logger, postHookSpanFinalizer)
+				return
+			}
+
+			var gigaChatResponse GigaChatChatStreamResponse
+			_, rawResponse, handlerErr := providerUtils.HandleProviderResponse(data, &gigaChatResponse, nil, false, sendBackRawResponse)
+			if handlerErr != nil {
+				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+				providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, providerUtils.EnrichError(ctx, handlerErr, jsonData, data, sendBackRawRequest, sendBackRawResponse), responseChan, provider.logger, postHookSpanFinalizer)
+				return
+			}
+
+			if gigaChatResponse.Usage != nil {
+				usageSeen = true
+				updateGigaChatResponsesStreamUsage(usage, toBifrostGigaChatUsage(gigaChatResponse.Usage))
+			}
+
+			responses := ToBifrostResponsesStreamResponse(providerName, &gigaChatResponse, streamState)
+			for _, response := range responses {
+				if response == nil {
+					continue
+				}
+				response.ExtraFields.ChunkIndex = response.SequenceNumber
+				response.ExtraFields.ProviderResponseHeaders = providerResponseHeaders
+				if sendBackRawResponse {
+					response.ExtraFields.RawResponse = rawResponse
+				}
+
+				if response.Type == schemas.ResponsesStreamResponseTypeCompleted || response.Type == schemas.ResponsesStreamResponseTypeIncomplete {
+					pendingFinalEvent = response
+					continue
+				}
+
+				response.ExtraFields.Latency = time.Since(lastChunkTime).Milliseconds()
+				lastChunkTime = time.Now()
+				providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, response, nil, nil, nil), responseChan, postHookSpanFinalizer)
+			}
+		}
+
+		if pendingFinalEvent != nil {
+			if usageSeen && pendingFinalEvent.Response != nil {
+				pendingFinalEvent.Response.Usage = usage.ToResponsesResponseUsage()
+			}
+			if sendBackRawRequest {
+				providerUtils.ParseAndSetRawRequest(&pendingFinalEvent.ExtraFields, jsonData)
+			}
+			pendingFinalEvent.ExtraFields.Latency = time.Since(startTime).Milliseconds()
+			ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+			providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, pendingFinalEvent, nil, nil, nil), responseChan, postHookSpanFinalizer)
+		}
+	}()
+
+	return responseChan, nil
+}
+
 // ListModels performs a v1 models request to GigaChat.
 func (provider *GigaChatProvider) ListModels(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
 	if err := providerUtils.CheckOperationAllowed(schemas.GigaChat, provider.customProviderConfig, schemas.ListModelsRequest); err != nil {
@@ -558,9 +768,17 @@ func (provider *GigaChatProvider) Responses(ctx *schemas.BifrostContext, key sch
 	return response, bifrostErr
 }
 
-// ResponsesStream is not supported by the GigaChat provider skeleton.
-func (provider *GigaChatProvider) ResponsesStream(_ *schemas.BifrostContext, _ schemas.PostHookRunner, _ func(context.Context), _ schemas.Key, _ *schemas.BifrostResponsesRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
-	return nil, provider.unsupported(schemas.ResponsesStreamRequest)
+// ResponsesStream sends a streaming v2 chat completions request to GigaChat.
+func (provider *GigaChatProvider) ResponsesStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostResponsesRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	if err := providerUtils.CheckOperationAllowed(schemas.GigaChat, provider.customProviderConfig, schemas.ResponsesStreamRequest); err != nil {
+		return nil, err
+	}
+
+	responseChan, bifrostErr := provider.responsesStreamWithRefresh(ctx, postHookRunner, postHookSpanFinalizer, key, request, false)
+	if isGigaChatUnauthorizedError(bifrostErr) {
+		return provider.responsesStreamWithRefresh(ctx, postHookRunner, postHookSpanFinalizer, key, request, true)
+	}
+	return responseChan, bifrostErr
 }
 
 // CountTokens is not supported by the GigaChat provider skeleton.

@@ -1,6 +1,7 @@
 package gigachat
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -9,6 +10,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
 )
@@ -19,6 +21,10 @@ func TestGigaChatResponsesRequestConversion(t *testing.T) {
 
 func TestGigaChatResponses(t *testing.T) {
 	testGigaChatResponses(t)
+}
+
+func TestGigaChatResponsesStream(t *testing.T) {
+	testGigaChatResponsesStream(t)
 }
 
 func testGigaChatResponsesRequestConversion(t *testing.T) {
@@ -40,6 +46,15 @@ func testGigaChatResponses(t *testing.T) {
 	t.Run("ExecutesWithOAuthToken", testGigaChatResponsesExecutesWithOAuthToken)
 	t.Run("MapsProviderErrors", testGigaChatResponsesMapsProviderErrors)
 	t.Run("RefreshesTokenAfterUnauthorized", testGigaChatResponsesRefreshesTokenAfterUnauthorized)
+}
+
+func testGigaChatResponsesStream(t *testing.T) {
+	t.Parallel()
+
+	t.Run("TextDeltasAndUsage", testGigaChatResponsesStreamTextDeltasAndUsage)
+	t.Run("ToolCallDeltas", testGigaChatResponsesStreamToolCallDeltas)
+	t.Run("MapsErrorEvents", testGigaChatResponsesStreamMapsErrorEvents)
+	t.Run("HandlesContextCancellation", testGigaChatResponsesStreamHandlesContextCancellation)
 }
 
 func testGigaChatResponsesSimpleTextInput(t *testing.T) {
@@ -601,6 +616,238 @@ func testGigaChatResponsesRefreshesTokenAfterUnauthorized(t *testing.T) {
 	}
 }
 
+func testGigaChatResponsesStreamTextDeltasAndUsage(t *testing.T) {
+	t.Parallel()
+
+	var tokenRequests atomic.Int32
+	var streamRequests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/oauth":
+			tokenRequests.Add(1)
+			if got := request.Header.Get("Authorization"); got != "Basic super-secret-credentials" {
+				t.Fatalf("token authorization header mismatch: got %q", got)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"access_token":"responses-stream-token","expires_at":1893456000}`))
+		case "/v2/chat/completions":
+			streamRequests.Add(1)
+			if got := request.Header.Get("Authorization"); got != "Bearer responses-stream-token" {
+				t.Fatalf("stream authorization header mismatch: got %q", got)
+			}
+			if strings.Contains(request.Header.Get("Authorization"), "super-secret-credentials") {
+				t.Fatal("stream request leaked OAuth credentials")
+			}
+			assertGigaChatResponsesStreamRequestBody(t, request)
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.Header().Set("X-Request-ID", "responses-stream-request-id")
+			_, _ = w.Write([]byte("data: {\"id\":\"resp-stream\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"При\"}}],\"created\":1700000000,\"model\":\"GigaChat-2\",\"object\":\"chat.completion\"}\n\n"))
+			_, _ = w.Write([]byte("data: {\"id\":\"resp-stream\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"вет\"}}],\"created\":1700000000,\"model\":\"GigaChat-2\",\"object\":\"chat.completion\"}\n\n"))
+			_, _ = w.Write([]byte("data: {\"id\":\"resp-stream\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}],\"created\":1700000000,\"model\":\"GigaChat-2\",\"object\":\"chat.completion\",\"usage\":{\"prompt_tokens\":7,\"completion_tokens\":3,\"total_tokens\":10,\"precached_prompt_tokens\":2}}\n\n"))
+			_, _ = w.Write([]byte("data: [DONE]\n\n"))
+		default:
+			t.Fatalf("unexpected path: %s", request.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	provider := newTestGigaChatChatProvider(t, server.URL)
+	provider.sendBackRawRequest = true
+	provider.sendBackRawResponse = true
+	ctx := testBifrostContext()
+
+	stream, bifrostErr := provider.ResponsesStream(ctx, testGigaChatPostHookRunner, nil, testGigaChatOAuthKey(server.URL+"/oauth", "", "super-secret-credentials"), testGigaChatResponsesExecutionRequest())
+	if bifrostErr != nil {
+		t.Fatalf("ResponsesStream returned error: %v", bifrostErr)
+	}
+
+	chunks := collectGigaChatStreamChunks(t, stream)
+	if tokenRequests.Load() != 1 {
+		t.Fatalf("token request count mismatch: got %d, want 1", tokenRequests.Load())
+	}
+	if streamRequests.Load() != 1 {
+		t.Fatalf("stream request count mismatch: got %d, want 1", streamRequests.Load())
+	}
+
+	responses := collectGigaChatResponsesStreamResponses(t, chunks)
+	assertGigaChatResponsesStreamTypes(t, responses, []schemas.ResponsesStreamResponseType{
+		schemas.ResponsesStreamResponseTypeCreated,
+		schemas.ResponsesStreamResponseTypeInProgress,
+		schemas.ResponsesStreamResponseTypeOutputItemAdded,
+		schemas.ResponsesStreamResponseTypeContentPartAdded,
+		schemas.ResponsesStreamResponseTypeOutputTextDelta,
+		schemas.ResponsesStreamResponseTypeOutputTextDelta,
+		schemas.ResponsesStreamResponseTypeOutputTextDone,
+		schemas.ResponsesStreamResponseTypeContentPartDone,
+		schemas.ResponsesStreamResponseTypeOutputItemDone,
+		schemas.ResponsesStreamResponseTypeCompleted,
+	})
+	if responses[4].Delta == nil || *responses[4].Delta != "При" {
+		t.Fatalf("first delta mismatch: %#v", responses[4].Delta)
+	}
+	if responses[5].Delta == nil || *responses[5].Delta != "вет" {
+		t.Fatalf("second delta mismatch: %#v", responses[5].Delta)
+	}
+	finalResponse := responses[len(responses)-1]
+	if finalResponse.Response == nil || finalResponse.Response.Usage == nil || finalResponse.Response.Usage.TotalTokens != 10 {
+		t.Fatalf("final usage mismatch: %#v", finalResponse.Response)
+	}
+	if finalResponse.Response.Usage.InputTokensDetails == nil || finalResponse.Response.Usage.InputTokensDetails.CachedReadTokens != 2 {
+		t.Fatalf("cached token usage mismatch: %#v", finalResponse.Response.Usage)
+	}
+	if finalResponse.Response.Status == nil || *finalResponse.Response.Status != "completed" {
+		t.Fatalf("final status mismatch: %#v", finalResponse.Response.Status)
+	}
+	if finalResponse.ExtraFields.RawRequest == nil || finalResponse.ExtraFields.RawResponse == nil {
+		t.Fatalf("expected raw request and response, got request=%#v response=%#v", finalResponse.ExtraFields.RawRequest, finalResponse.ExtraFields.RawResponse)
+	}
+	if got := ctx.Value(schemas.BifrostContextKeyProviderResponseHeaders); got == nil {
+		t.Fatal("provider response headers were not stored in context")
+	}
+}
+
+func testGigaChatResponsesStreamToolCallDeltas(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/v2/chat/completions" {
+			t.Fatalf("unexpected path: %s", request.URL.Path)
+		}
+		assertGigaChatResponsesStreamRequestBody(t, request)
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"id\":\"resp-tools\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"function_call\":{\"name\":\"get_weather\",\"arguments\":{\"city\":\"Moscow\"}},\"functions_state_id\":\"call-weather\"}}],\"created\":1700000000,\"model\":\"GigaChat-2\",\"object\":\"chat.completion\"}\n\n"))
+		_, _ = w.Write([]byte("data: {\"id\":\"resp-tools\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"function_call\"}],\"created\":1700000000,\"model\":\"GigaChat-2\",\"object\":\"chat.completion\",\"usage\":{\"prompt_tokens\":11,\"completion_tokens\":4,\"total_tokens\":15}}\n\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer server.Close()
+
+	provider := newTestGigaChatChatProvider(t, server.URL)
+	stream, bifrostErr := provider.ResponsesStream(testBifrostContext(), testGigaChatPostHookRunner, nil, testGigaChatAccessTokenKey("responses-stream-token"), testGigaChatResponsesExecutionRequest())
+	if bifrostErr != nil {
+		t.Fatalf("ResponsesStream returned error: %v", bifrostErr)
+	}
+
+	responses := collectGigaChatResponsesStreamResponses(t, collectGigaChatStreamChunks(t, stream))
+	assertGigaChatResponsesStreamTypes(t, responses, []schemas.ResponsesStreamResponseType{
+		schemas.ResponsesStreamResponseTypeCreated,
+		schemas.ResponsesStreamResponseTypeInProgress,
+		schemas.ResponsesStreamResponseTypeOutputItemAdded,
+		schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDelta,
+		schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDone,
+		schemas.ResponsesStreamResponseTypeOutputItemDone,
+		schemas.ResponsesStreamResponseTypeCompleted,
+	})
+	if responses[2].Item == nil || responses[2].Item.ResponsesToolMessage == nil || responses[2].Item.ResponsesToolMessage.Name == nil || *responses[2].Item.ResponsesToolMessage.Name != "get_weather" {
+		t.Fatalf("tool item mismatch: %#v", responses[2].Item)
+	}
+	if responses[3].Delta == nil || *responses[3].Delta != `{"city":"Moscow"}` {
+		t.Fatalf("tool delta mismatch: %#v", responses[3].Delta)
+	}
+	if responses[4].Arguments == nil || *responses[4].Arguments != `{"city":"Moscow"}` {
+		t.Fatalf("tool arguments mismatch: %#v", responses[4].Arguments)
+	}
+	finalResponse := responses[len(responses)-1]
+	if finalResponse.Response == nil || finalResponse.Response.Usage == nil || finalResponse.Response.Usage.TotalTokens != 15 {
+		t.Fatalf("final usage mismatch: %#v", finalResponse.Response)
+	}
+}
+
+func testGigaChatResponsesStreamMapsErrorEvents(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/v2/chat/completions" {
+			t.Fatalf("unexpected path: %s", request.URL.Path)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"status\":429,\"code\":42901,\"message\":\"rate limit\"}\n\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer server.Close()
+
+	provider := newTestGigaChatChatProvider(t, server.URL)
+	stream, bifrostErr := provider.ResponsesStream(testBifrostContext(), testGigaChatPostHookRunner, nil, testGigaChatAccessTokenKey("responses-stream-token"), testGigaChatResponsesExecutionRequest())
+	if bifrostErr != nil {
+		t.Fatalf("ResponsesStream returned error before stream: %v", bifrostErr)
+	}
+
+	chunks := collectGigaChatStreamChunks(t, stream)
+	if len(chunks) != 1 || chunks[0].BifrostError == nil {
+		t.Fatalf("expected one error chunk, got %#v", chunks)
+	}
+	streamErr := chunks[0].BifrostError
+	if streamErr.StatusCode == nil || *streamErr.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("status mismatch: %#v", streamErr.StatusCode)
+	}
+	if streamErr.Error == nil || streamErr.Error.Message != "rate limit" {
+		t.Fatalf("message mismatch: %#v", streamErr.Error)
+	}
+	if streamErr.Error.Code == nil || *streamErr.Error.Code != "42901" {
+		t.Fatalf("code mismatch: %#v", streamErr.Error)
+	}
+}
+
+func testGigaChatResponsesStreamHandlesContextCancellation(t *testing.T) {
+	t.Parallel()
+
+	firstChunkWritten := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/v2/chat/completions" {
+			t.Fatalf("unexpected path: %s", request.URL.Path)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"id\":\"resp-cancel\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"partial\"}}],\"created\":1700000000,\"model\":\"GigaChat-2\",\"object\":\"chat.completion\"}\n\n"))
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		close(firstChunkWritten)
+		<-request.Context().Done()
+	}))
+	defer server.Close()
+
+	provider := newTestGigaChatChatProvider(t, server.URL)
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	stream, bifrostErr := provider.ResponsesStream(ctx, testGigaChatPostHookRunner, nil, testGigaChatAccessTokenKey("responses-stream-token"), testGigaChatResponsesExecutionRequest())
+	if bifrostErr != nil {
+		t.Fatalf("ResponsesStream returned error: %v", bifrostErr)
+	}
+
+	select {
+	case <-firstChunkWritten:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for first stream chunk")
+	}
+
+	select {
+	case firstChunk := <-stream:
+		if firstChunk == nil || firstChunk.BifrostResponsesStreamResponse == nil {
+			t.Fatalf("missing first responses stream chunk: %#v", firstChunk)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for first response chunk")
+	}
+
+	cancel()
+	select {
+	case <-ctx.Done():
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for context cancellation")
+	}
+
+	streamClosed := make(chan struct{})
+	go func() {
+		for range stream {
+		}
+		close(streamClosed)
+	}()
+
+	select {
+	case <-streamClosed:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for stream to close after context cancellation")
+	}
+}
+
 func testGigaChatResponsesRequest() *schemas.BifrostResponsesRequest {
 	return &schemas.BifrostResponsesRequest{
 		Model: "GigaChat-2",
@@ -680,6 +927,81 @@ func assertGigaChatResponsesRequestBody(t *testing.T, request *http.Request) {
 	contentPart, ok := content[0].(map[string]interface{})
 	if !ok || contentPart["text"] != "Привет" {
 		t.Fatalf("content part mismatch: %#v", content[0])
+	}
+}
+
+func assertGigaChatResponsesStreamRequestBody(t *testing.T, request *http.Request) {
+	t.Helper()
+
+	if request.Method != http.MethodPost {
+		t.Fatalf("method mismatch: got %s, want POST", request.Method)
+	}
+	if got := request.Header.Get("Content-Type"); !strings.HasPrefix(got, "application/json") {
+		t.Fatalf("content type mismatch: got %q", got)
+	}
+	if got := request.Header.Get("Accept"); got != "text/event-stream" {
+		t.Fatalf("accept header mismatch: got %q", got)
+	}
+	if got := request.Header.Get(gigaChatUserAgentHeader); got != gigaChatUserAgent {
+		t.Fatalf("user-agent mismatch: got %q, want %q", got, gigaChatUserAgent)
+	}
+
+	body, err := io.ReadAll(request.Body)
+	if err != nil {
+		t.Fatalf("failed to read request body: %v", err)
+	}
+	var payload map[string]interface{}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("failed to unmarshal request body %s: %v", body, err)
+	}
+	if got := payload["model"]; got != "GigaChat-2" {
+		t.Fatalf("model mismatch: got %#v", got)
+	}
+	if got := payload["stream"]; got != true {
+		t.Fatalf("stream mismatch: got %#v, want true; body=%s", got, body)
+	}
+	messages, ok := payload["messages"].([]interface{})
+	if !ok || len(messages) != 1 {
+		t.Fatalf("messages mismatch: %#v", payload["messages"])
+	}
+}
+
+func collectGigaChatResponsesStreamResponses(t *testing.T, chunks []*schemas.BifrostStreamChunk) []*schemas.BifrostResponsesStreamResponse {
+	t.Helper()
+
+	responses := make([]*schemas.BifrostResponsesStreamResponse, 0, len(chunks))
+	for _, chunk := range chunks {
+		if chunk == nil {
+			t.Fatal("got nil stream chunk")
+		}
+		if chunk.BifrostError != nil {
+			t.Fatalf("unexpected stream error: %v", chunk.BifrostError)
+		}
+		if chunk.BifrostResponsesStreamResponse == nil {
+			t.Fatalf("missing responses stream response: %#v", chunk)
+		}
+		if chunk.BifrostResponsesStreamResponse.ExtraFields.Provider != schemas.GigaChat {
+			t.Fatalf("provider mismatch: got %q, want %q", chunk.BifrostResponsesStreamResponse.ExtraFields.Provider, schemas.GigaChat)
+		}
+		responses = append(responses, chunk.BifrostResponsesStreamResponse)
+	}
+	return responses
+}
+
+func assertGigaChatResponsesStreamTypes(t *testing.T, responses []*schemas.BifrostResponsesStreamResponse, want []schemas.ResponsesStreamResponseType) {
+	t.Helper()
+
+	if len(responses) != len(want) {
+		gotTypes := make([]schemas.ResponsesStreamResponseType, 0, len(responses))
+		for _, response := range responses {
+			gotTypes = append(gotTypes, response.Type)
+		}
+		t.Fatalf("response type count mismatch: got %d %v, want %d %v", len(responses), gotTypes, len(want), want)
+	}
+	for index, wantType := range want {
+		if responses[index].Type != wantType {
+			t.Fatalf("response type[%d] mismatch: got %q, want %q", index, responses[index].Type, wantType)
+		}
 	}
 }
 

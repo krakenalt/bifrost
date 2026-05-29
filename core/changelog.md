@@ -1,3 +1,4 @@
+- feat: implement GigaChat Responses streaming
 - feat: implement GigaChat Responses via v2 chat
 - feat: map GigaChat Responses requests to v2 chat
 - feat: implement GigaChat embeddings API
