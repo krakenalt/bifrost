@@ -9,7 +9,6 @@ import {
   useGetVirtualKeysQuery,
 } from "@/lib/store";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
-import { parseAsSafeString } from "@/lib/queryParamsParser";
 import { parseAsInteger, parseAsString, useQueryStates } from "nuqs";
 import { useEffect, useRef } from "react";
 import { toast } from "sonner";
