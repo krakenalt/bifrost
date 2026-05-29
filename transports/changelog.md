@@ -1,5 +1,6 @@
 ## ✨ Features
 
+- **GigaChat Config and OpenAPI Exposure** — Exposed GigaChat in transport config and OpenAPI provider schemas
 - **GigaChat Key Config Schema** — Added config schema validation for GigaChat auth modes and per-key endpoint overrides
 - **Azure v1 API Migration** — Migrated Azure provider to the v1 API: removed the `api-version` query parameter and the `/openai/deployments/{model}/...` URL pattern in favor of `/openai/v1/{operation}`; the `api_version` field has been dropped from `AzureKeyConfig` (#3661, #3756)
 - **EnvVar Support for OTEL & Prometheus Configs** — `CollectorURL`, `MetricsEndpoint`, headers, push gateway URL, and basic auth credentials can now be sourced from environment variables (e.g., `env.OTEL_COLLECTOR_URL`); added a new `ConfigMarshallerPlugin` interface that lets plugins control storage/redaction round-trips (#3651)

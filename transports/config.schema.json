@@ -1420,6 +1420,7 @@
                         "openai",
                         "anthropic",
                         "gemini",
+                        "gigachat",
                         "bedrock",
                         "azure",
                         "cohere",
