@@ -18,11 +18,11 @@ func ParseGigaChatError(resp *fasthttp.Response, providerName schemas.ModelProvi
 		bifrostErr.Error = &schemas.ErrorField{}
 	}
 
-	if strings.TrimSpace(errorResp.Message) != "" {
-		bifrostErr.Error.Message = errorResp.Message
+	if message := gigaChatErrorMessage(errorResp); message != "" {
+		bifrostErr.Error.Message = message
 	}
-	if errorResp.Code != nil {
-		code := strconv.Itoa(*errorResp.Code)
+	if codeValue, ok := gigaChatErrorCode(errorResp); ok {
+		code := codeValue
 		bifrostErr.Error.Code = &code
 	} else if errorResp.Status != nil {
 		code := strconv.Itoa(*errorResp.Status)
@@ -42,4 +42,28 @@ func ParseGigaChatError(resp *fasthttp.Response, providerName schemas.ModelProvi
 
 	bifrostErr.ExtraFields.Provider = providerName
 	return bifrostErr
+}
+
+func gigaChatErrorMessage(errorResp GigaChatErrorResponse) string {
+	for _, message := range []string{errorResp.Message, errorResp.ErrorDescription, errorResp.Error} {
+		if trimmed := strings.TrimSpace(message); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
+}
+
+func gigaChatErrorCode(errorResp GigaChatErrorResponse) (string, bool) {
+	switch code := errorResp.Code.(type) {
+	case nil:
+		return "", false
+	case float64:
+		return strconv.Itoa(int(code)), true
+	case string:
+		trimmed := strings.TrimSpace(code)
+		return trimmed, trimmed != ""
+	default:
+		trimmed := strings.TrimSpace(fmt.Sprint(code))
+		return trimmed, trimmed != ""
+	}
 }

@@ -352,7 +352,9 @@ type GigaChatResponsesChoice struct {
 
 // GigaChatErrorResponse is the common REST API error shape used by GigaChat.
 type GigaChatErrorResponse struct {
-	Status  *int   `json:"status,omitempty"`
-	Code    *int   `json:"code,omitempty"`
-	Message string `json:"message,omitempty"`
+	Status           *int        `json:"status,omitempty"`
+	Code             interface{} `json:"code,omitempty"`
+	Message          string      `json:"message,omitempty"`
+	Error            string      `json:"error,omitempty"`
+	ErrorDescription string      `json:"error_description,omitempty"`
 }

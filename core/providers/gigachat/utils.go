@@ -7,6 +7,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/bytedance/sonic"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	schemas "github.com/maximhq/bifrost/core/schemas"
 	"github.com/valyala/fasthttp"
@@ -161,4 +162,71 @@ func gigaChatKeyConfigHasTLSMaterial(keyConfig *schemas.GigaChatKeyConfig) bool 
 		strings.TrimSpace(keyConfig.CertFile) != "" ||
 		strings.TrimSpace(keyConfig.KeyFile) != "" ||
 		keyConfig.KeyFilePassword.IsSet()
+}
+
+func enrichGigaChatError(ctx *schemas.BifrostContext, bifrostErr *schemas.BifrostError, requestBody []byte, responseBody []byte, sendBackRawRequest bool, sendBackRawResponse bool) *schemas.BifrostError {
+	return providerUtils.EnrichError(ctx, bifrostErr, redactGigaChatRawPayload(requestBody), redactGigaChatRawPayload(responseBody), sendBackRawRequest, sendBackRawResponse)
+}
+
+func redactGigaChatRawPayload(payload []byte) []byte {
+	if len(payload) == 0 {
+		return payload
+	}
+	var value interface{}
+	if err := sonic.Unmarshal(payload, &value); err != nil {
+		return []byte(redactGigaChatSensitiveText(string(payload)))
+	}
+	redactGigaChatJSONValue(value)
+	redacted, err := sonic.Marshal(value)
+	if err != nil {
+		return []byte(redactGigaChatSensitiveText(string(payload)))
+	}
+	return redacted
+}
+
+func redactGigaChatJSONValue(value interface{}) {
+	switch typed := value.(type) {
+	case map[string]interface{}:
+		for key, child := range typed {
+			if isGigaChatSensitiveField(key) {
+				typed[key] = "<redacted>"
+				continue
+			}
+			redactGigaChatJSONValue(child)
+		}
+	case []interface{}:
+		for _, child := range typed {
+			redactGigaChatJSONValue(child)
+		}
+	}
+}
+
+func isGigaChatSensitiveField(fieldName string) bool {
+	switch strings.ToLower(strings.TrimSpace(fieldName)) {
+	case "authorization", "access_token", "credentials", "password", "key_file_password", "client_secret", "refresh_token":
+		return true
+	default:
+		return false
+	}
+}
+
+func redactGigaChatSensitiveText(text string) string {
+	redacted := text
+	for _, prefix := range []string{"Bearer ", "Basic "} {
+		searchFrom := 0
+		for {
+			index := strings.Index(redacted[searchFrom:], prefix)
+			if index < 0 {
+				break
+			}
+			start := searchFrom + index + len(prefix)
+			end := start
+			for end < len(redacted) && !strings.ContainsRune(" \t\r\n\"',}", rune(redacted[end])) {
+				end++
+			}
+			redacted = redacted[:start] + "<redacted>" + redacted[end:]
+			searchFrom = start + len("<redacted>")
+		}
+	}
+	return redacted
 }

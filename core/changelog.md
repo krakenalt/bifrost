@@ -1,3 +1,4 @@
+- feat: normalize GigaChat errors and raw payload redaction
 - feat: harden GigaChat tools compatibility
 - fix: align GigaChat Responses conversion with v2 chat completions contract
 - feat: implement GigaChat Responses streaming

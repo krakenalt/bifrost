@@ -508,7 +508,7 @@ func parseGigaChatStreamError(responseBody []byte, providerName schemas.ModelPro
 	if err := json.Unmarshal(responseBody, &errorResp); err != nil {
 		return nil
 	}
-	if errorResp.Status == nil && errorResp.Code == nil && strings.TrimSpace(errorResp.Message) == "" {
+	if errorResp.Status == nil && errorResp.Code == nil && gigaChatErrorMessage(errorResp) == "" {
 		return nil
 	}
 
@@ -525,13 +525,13 @@ func parseGigaChatStreamError(responseBody []byte, providerName schemas.ModelPro
 			Provider: providerName,
 		},
 	}
-	if strings.TrimSpace(errorResp.Message) != "" {
-		bifrostErr.Error.Message = errorResp.Message
+	if message := gigaChatErrorMessage(errorResp); message != "" {
+		bifrostErr.Error.Message = message
 	} else {
 		bifrostErr.Error.Message = fmt.Sprintf("GigaChat API error (status %d)", statusCode)
 	}
-	if errorResp.Code != nil {
-		code := fmt.Sprintf("%d", *errorResp.Code)
+	if codeValue, ok := gigaChatErrorCode(errorResp); ok {
+		code := codeValue
 		bifrostErr.Error.Code = &code
 	} else if errorResp.Status != nil {
 		code := fmt.Sprintf("%d", *errorResp.Status)

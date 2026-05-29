@@ -120,7 +120,7 @@ func (provider *GigaChatProvider) chatCompletion(ctx *schemas.BifrostContext, ke
 	defer wait()
 	if bifrostErr != nil {
 		bifrostErr.ExtraFields.Provider = provider.GetProviderKey()
-		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, nil, sendBackRawRequest, sendBackRawResponse)
+		return nil, enrichGigaChatError(ctx, bifrostErr, jsonData, nil, sendBackRawRequest, sendBackRawResponse)
 	}
 
 	providerResponseHeaders := providerUtils.ExtractProviderResponseHeaders(resp)
@@ -128,19 +128,19 @@ func (provider *GigaChatProvider) chatCompletion(ctx *schemas.BifrostContext, ke
 
 	if resp.StatusCode() != fasthttp.StatusOK {
 		bifrostErr := ParseGigaChatError(resp, provider.GetProviderKey())
-		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, nil, sendBackRawRequest, sendBackRawResponse)
+		return nil, enrichGigaChatError(ctx, bifrostErr, jsonData, nil, sendBackRawRequest, sendBackRawResponse)
 	}
 
 	responseBody, err := providerUtils.CheckAndDecodeBody(resp)
 	if err != nil {
 		bifrostErr := newGigaChatProviderResponseError("failed to decode GigaChat chat completion response", err)
-		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, resp.Body(), sendBackRawRequest, sendBackRawResponse)
+		return nil, enrichGigaChatError(ctx, bifrostErr, jsonData, resp.Body(), sendBackRawRequest, sendBackRawResponse)
 	}
 
 	gigaChatResponse := &GigaChatChatResponse{}
 	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(responseBody, gigaChatResponse, jsonData, sendBackRawRequest, sendBackRawResponse)
 	if bifrostErr != nil {
-		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, responseBody, sendBackRawRequest, sendBackRawResponse)
+		return nil, enrichGigaChatError(ctx, bifrostErr, jsonData, responseBody, sendBackRawRequest, sendBackRawResponse)
 	}
 
 	response := ToBifrostChatResponse(provider.GetProviderKey(), gigaChatResponse)
@@ -272,7 +272,7 @@ func (provider *GigaChatProvider) listModelsByKeyWithRefresh(ctx *schemas.Bifros
 	defer wait()
 	if bifrostErr != nil {
 		bifrostErr.ExtraFields.Provider = provider.GetProviderKey()
-		return nil, providerUtils.EnrichError(ctx, bifrostErr, nil, nil, sendBackRawRequest, sendBackRawResponse)
+		return nil, enrichGigaChatError(ctx, bifrostErr, nil, nil, sendBackRawRequest, sendBackRawResponse)
 	}
 
 	providerResponseHeaders := providerUtils.ExtractProviderResponseHeaders(resp)
@@ -280,19 +280,19 @@ func (provider *GigaChatProvider) listModelsByKeyWithRefresh(ctx *schemas.Bifros
 
 	if resp.StatusCode() != fasthttp.StatusOK {
 		bifrostErr := ParseGigaChatError(resp, provider.GetProviderKey())
-		return nil, providerUtils.EnrichError(ctx, bifrostErr, nil, resp.Body(), sendBackRawRequest, sendBackRawResponse)
+		return nil, enrichGigaChatError(ctx, bifrostErr, nil, resp.Body(), sendBackRawRequest, sendBackRawResponse)
 	}
 
 	responseBody, err := providerUtils.CheckAndDecodeBody(resp)
 	if err != nil {
 		bifrostErr := newGigaChatProviderResponseError("failed to decode GigaChat models response", err)
-		return nil, providerUtils.EnrichError(ctx, bifrostErr, nil, resp.Body(), sendBackRawRequest, sendBackRawResponse)
+		return nil, enrichGigaChatError(ctx, bifrostErr, nil, resp.Body(), sendBackRawRequest, sendBackRawResponse)
 	}
 
 	gigaChatResponse := &GigaChatListModelsResponse{}
 	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(responseBody, gigaChatResponse, nil, sendBackRawRequest, sendBackRawResponse)
 	if bifrostErr != nil {
-		return nil, providerUtils.EnrichError(ctx, bifrostErr, nil, responseBody, sendBackRawRequest, sendBackRawResponse)
+		return nil, enrichGigaChatError(ctx, bifrostErr, nil, responseBody, sendBackRawRequest, sendBackRawResponse)
 	}
 
 	response := gigaChatResponse.ToBifrostListModelsResponse(provider.GetProviderKey(), key.Models, key.BlacklistedModels, key.Aliases, request.Unfiltered)
@@ -361,7 +361,7 @@ func (provider *GigaChatProvider) embeddingWithRefresh(ctx *schemas.BifrostConte
 	defer wait()
 	if bifrostErr != nil {
 		bifrostErr.ExtraFields.Provider = provider.GetProviderKey()
-		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, nil, sendBackRawRequest, sendBackRawResponse)
+		return nil, enrichGigaChatError(ctx, bifrostErr, jsonData, nil, sendBackRawRequest, sendBackRawResponse)
 	}
 
 	providerResponseHeaders := providerUtils.ExtractProviderResponseHeaders(resp)
@@ -369,19 +369,19 @@ func (provider *GigaChatProvider) embeddingWithRefresh(ctx *schemas.BifrostConte
 
 	if resp.StatusCode() != fasthttp.StatusOK {
 		bifrostErr := ParseGigaChatError(resp, provider.GetProviderKey())
-		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, resp.Body(), sendBackRawRequest, sendBackRawResponse)
+		return nil, enrichGigaChatError(ctx, bifrostErr, jsonData, resp.Body(), sendBackRawRequest, sendBackRawResponse)
 	}
 
 	responseBody, err := providerUtils.CheckAndDecodeBody(resp)
 	if err != nil {
 		bifrostErr := newGigaChatProviderResponseError("failed to decode GigaChat embeddings response", err)
-		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, resp.Body(), sendBackRawRequest, sendBackRawResponse)
+		return nil, enrichGigaChatError(ctx, bifrostErr, jsonData, resp.Body(), sendBackRawRequest, sendBackRawResponse)
 	}
 
 	gigaChatResponse := &GigaChatEmbeddingResponse{}
 	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(responseBody, gigaChatResponse, jsonData, sendBackRawRequest, sendBackRawResponse)
 	if bifrostErr != nil {
-		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, responseBody, sendBackRawRequest, sendBackRawResponse)
+		return nil, enrichGigaChatError(ctx, bifrostErr, jsonData, responseBody, sendBackRawRequest, sendBackRawResponse)
 	}
 
 	response := ToBifrostEmbeddingResponse(provider.GetProviderKey(), gigaChatResponse)
@@ -451,7 +451,7 @@ func (provider *GigaChatProvider) responsesWithRefresh(ctx *schemas.BifrostConte
 	defer wait()
 	if bifrostErr != nil {
 		bifrostErr.ExtraFields.Provider = provider.GetProviderKey()
-		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, nil, sendBackRawRequest, sendBackRawResponse)
+		return nil, enrichGigaChatError(ctx, bifrostErr, jsonData, nil, sendBackRawRequest, sendBackRawResponse)
 	}
 
 	providerResponseHeaders := providerUtils.ExtractProviderResponseHeaders(resp)
@@ -459,19 +459,19 @@ func (provider *GigaChatProvider) responsesWithRefresh(ctx *schemas.BifrostConte
 
 	if resp.StatusCode() != fasthttp.StatusOK {
 		bifrostErr := ParseGigaChatError(resp, provider.GetProviderKey())
-		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, resp.Body(), sendBackRawRequest, sendBackRawResponse)
+		return nil, enrichGigaChatError(ctx, bifrostErr, jsonData, resp.Body(), sendBackRawRequest, sendBackRawResponse)
 	}
 
 	responseBody, err := providerUtils.CheckAndDecodeBody(resp)
 	if err != nil {
 		bifrostErr := newGigaChatProviderResponseError("failed to decode GigaChat Responses response", err)
-		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, resp.Body(), sendBackRawRequest, sendBackRawResponse)
+		return nil, enrichGigaChatError(ctx, bifrostErr, jsonData, resp.Body(), sendBackRawRequest, sendBackRawResponse)
 	}
 
 	gigaChatResponse := &GigaChatResponsesResponse{}
 	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(responseBody, gigaChatResponse, jsonData, sendBackRawRequest, sendBackRawResponse)
 	if bifrostErr != nil {
-		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, responseBody, sendBackRawRequest, sendBackRawResponse)
+		return nil, enrichGigaChatError(ctx, bifrostErr, jsonData, responseBody, sendBackRawRequest, sendBackRawResponse)
 	}
 
 	response := ToBifrostResponsesResponse(provider.GetProviderKey(), gigaChatResponse)
@@ -558,12 +558,12 @@ func (provider *GigaChatProvider) responsesStreamWithRefresh(
 					Message: schemas.ErrRequestCancelled,
 					Error:   err,
 				},
-			}, jsonData, nil, sendBackRawRequest, sendBackRawResponse)
+			}, redactGigaChatRawPayload(jsonData), nil, sendBackRawRequest, sendBackRawResponse)
 		}
 		if errors.Is(err, fasthttp.ErrTimeout) || errors.Is(err, context.DeadlineExceeded) {
-			return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, err), jsonData, nil, sendBackRawRequest, sendBackRawResponse)
+			return nil, enrichGigaChatError(ctx, providerUtils.NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, err), jsonData, nil, sendBackRawRequest, sendBackRawResponse)
 		}
-		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderDoRequest, err), jsonData, nil, sendBackRawRequest, sendBackRawResponse)
+		return nil, enrichGigaChatError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderDoRequest, err), jsonData, nil, sendBackRawRequest, sendBackRawResponse)
 	}
 
 	providerName := provider.GetProviderKey()
@@ -574,7 +574,7 @@ func (provider *GigaChatProvider) responsesStreamWithRefresh(
 		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
 		providerUtils.MaterializeStreamErrorBody(ctx, resp)
 		bifrostErr := ParseGigaChatError(resp, providerName)
-		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, nil, sendBackRawRequest, sendBackRawResponse)
+		return nil, enrichGigaChatError(ctx, bifrostErr, jsonData, nil, sendBackRawRequest, sendBackRawResponse)
 	}
 
 	if providerUtils.SetupStreamingPassthrough(ctx, resp) {
@@ -644,7 +644,7 @@ func (provider *GigaChatProvider) responsesStreamWithRefresh(
 
 			if bifrostErr := parseGigaChatStreamError(data, providerName); bifrostErr != nil {
 				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
-				providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, providerUtils.EnrichError(ctx, bifrostErr, jsonData, data, sendBackRawRequest, sendBackRawResponse), responseChan, provider.logger, postHookSpanFinalizer)
+				providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, enrichGigaChatError(ctx, bifrostErr, jsonData, data, sendBackRawRequest, sendBackRawResponse), responseChan, provider.logger, postHookSpanFinalizer)
 				return
 			}
 
@@ -652,7 +652,7 @@ func (provider *GigaChatProvider) responsesStreamWithRefresh(
 			_, rawResponse, handlerErr := providerUtils.HandleProviderResponse(data, &gigaChatResponse, nil, false, sendBackRawResponse)
 			if handlerErr != nil {
 				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
-				providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, providerUtils.EnrichError(ctx, handlerErr, jsonData, data, sendBackRawRequest, sendBackRawResponse), responseChan, provider.logger, postHookSpanFinalizer)
+				providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, enrichGigaChatError(ctx, handlerErr, jsonData, data, sendBackRawRequest, sendBackRawResponse), responseChan, provider.logger, postHookSpanFinalizer)
 				return
 			}
 
