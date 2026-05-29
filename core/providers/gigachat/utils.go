@@ -1,16 +1,24 @@
 package gigachat
 
 import (
+	"bytes"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/json"
 	"fmt"
 	"os"
+	"regexp"
 	"strings"
 
 	"github.com/bytedance/sonic"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	schemas "github.com/maximhq/bifrost/core/schemas"
 	"github.com/valyala/fasthttp"
+)
+
+var (
+	gigaChatAuthSchemePattern          = regexp.MustCompile(`(?i)\b(bearer|basic)\s+[^ \t\r\n"',}]+`)
+	gigaChatSensitiveAssignmentPattern = regexp.MustCompile(`(?i)\b(authorization|access_token|credentials|password|key_file_password|client_secret|refresh_token)\b\s*[:=]\s*[^ \t\r\n"',}]+`)
 )
 
 const (
@@ -165,7 +173,16 @@ func gigaChatKeyConfigHasTLSMaterial(keyConfig *schemas.GigaChatKeyConfig) bool 
 }
 
 func enrichGigaChatError(ctx *schemas.BifrostContext, bifrostErr *schemas.BifrostError, requestBody []byte, responseBody []byte, sendBackRawRequest bool, sendBackRawResponse bool) *schemas.BifrostError {
-	return providerUtils.EnrichError(ctx, bifrostErr, redactGigaChatRawPayload(requestBody), redactGigaChatRawPayload(responseBody), sendBackRawRequest, sendBackRawResponse)
+	enriched := providerUtils.EnrichError(ctx, bifrostErr, redactGigaChatRawPayload(requestBody), redactGigaChatRawPayload(responseBody), sendBackRawRequest, sendBackRawResponse)
+	if enriched == nil {
+		return nil
+	}
+	enriched.ExtraFields.RawRequest = redactGigaChatRawValue(enriched.ExtraFields.RawRequest)
+	enriched.ExtraFields.RawResponse = redactGigaChatRawValue(enriched.ExtraFields.RawResponse)
+	if enriched.Error != nil {
+		enriched.Error.Message = redactGigaChatSensitiveText(enriched.Error.Message)
+	}
+	return enriched
 }
 
 func redactGigaChatRawPayload(payload []byte) []byte {
@@ -176,7 +193,20 @@ func redactGigaChatRawPayload(payload []byte) []byte {
 	if err := sonic.Unmarshal(payload, &value); err != nil {
 		return []byte(redactGigaChatSensitiveText(string(payload)))
 	}
-	redactGigaChatJSONValue(value)
+	if stringValue, ok := value.(string); ok {
+		redacted := redactGigaChatSensitiveText(stringValue)
+		if redacted == stringValue {
+			return payload
+		}
+		redactedPayload, err := sonic.Marshal(redacted)
+		if err != nil {
+			return []byte(redacted)
+		}
+		return redactedPayload
+	}
+	if !redactGigaChatJSONValue(value) {
+		return payload
+	}
 	redacted, err := sonic.Marshal(value)
 	if err != nil {
 		return []byte(redactGigaChatSensitiveText(string(payload)))
@@ -184,21 +214,75 @@ func redactGigaChatRawPayload(payload []byte) []byte {
 	return redacted
 }
 
-func redactGigaChatJSONValue(value interface{}) {
+func redactGigaChatRawValue(raw interface{}) interface{} {
+	switch typed := raw.(type) {
+	case nil:
+		return nil
+	case json.RawMessage:
+		return json.RawMessage(redactGigaChatRawPayload([]byte(typed)))
+	case []byte:
+		redacted := redactGigaChatRawPayload(typed)
+		if json.Valid(redacted) {
+			return json.RawMessage(redacted)
+		}
+		return string(redacted)
+	case string:
+		return string(redactGigaChatRawPayload([]byte(typed)))
+	default:
+		payload, err := sonic.Marshal(raw)
+		if err != nil {
+			return raw
+		}
+		redactedPayload := redactGigaChatRawPayload(payload)
+		if bytes.Equal(payload, redactedPayload) {
+			return raw
+		}
+		var redacted interface{}
+		if err := sonic.Unmarshal(redactedPayload, &redacted); err != nil {
+			return string(redactedPayload)
+		}
+		return redacted
+	}
+}
+
+func redactGigaChatJSONValue(value interface{}) bool {
+	changed := false
 	switch typed := value.(type) {
 	case map[string]interface{}:
 		for key, child := range typed {
 			if isGigaChatSensitiveField(key) {
 				typed[key] = "<redacted>"
+				changed = true
 				continue
 			}
-			redactGigaChatJSONValue(child)
+			if redactedValue, ok := child.(string); ok {
+				redacted := redactGigaChatSensitiveText(redactedValue)
+				if redacted != redactedValue {
+					typed[key] = redacted
+					changed = true
+				}
+				continue
+			}
+			if redactGigaChatJSONValue(child) {
+				changed = true
+			}
 		}
 	case []interface{}:
-		for _, child := range typed {
-			redactGigaChatJSONValue(child)
+		for index, child := range typed {
+			if redactedValue, ok := child.(string); ok {
+				redacted := redactGigaChatSensitiveText(redactedValue)
+				if redacted != redactedValue {
+					typed[index] = redacted
+					changed = true
+				}
+				continue
+			}
+			if redactGigaChatJSONValue(child) {
+				changed = true
+			}
 		}
 	}
+	return changed
 }
 
 func isGigaChatSensitiveField(fieldName string) bool {
@@ -212,21 +296,7 @@ func isGigaChatSensitiveField(fieldName string) bool {
 
 func redactGigaChatSensitiveText(text string) string {
 	redacted := text
-	for _, prefix := range []string{"Bearer ", "Basic "} {
-		searchFrom := 0
-		for {
-			index := strings.Index(redacted[searchFrom:], prefix)
-			if index < 0 {
-				break
-			}
-			start := searchFrom + index + len(prefix)
-			end := start
-			for end < len(redacted) && !strings.ContainsRune(" \t\r\n\"',}", rune(redacted[end])) {
-				end++
-			}
-			redacted = redacted[:start] + "<redacted>" + redacted[end:]
-			searchFrom = start + len("<redacted>")
-		}
-	}
+	redacted = gigaChatAuthSchemePattern.ReplaceAllString(redacted, "$1 <redacted>")
+	redacted = gigaChatSensitiveAssignmentPattern.ReplaceAllString(redacted, "$1=<redacted>")
 	return redacted
 }

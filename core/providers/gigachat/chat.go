@@ -145,7 +145,7 @@ func handleGigaChatChatStreamResponse(providerName schemas.ModelProvider) func([
 	return func(responseBody []byte, response *schemas.BifrostChatResponse, requestBody []byte, sendBackRawRequest bool, sendBackRawResponse bool) (interface{}, interface{}, *schemas.BifrostError) {
 		if bifrostErr := parseGigaChatStreamError(responseBody, providerName); bifrostErr != nil {
 			rawRequest, rawResponse, _ := providerUtils.HandleProviderResponse(responseBody, &GigaChatErrorResponse{}, requestBody, sendBackRawRequest, sendBackRawResponse)
-			return rawRequest, rawResponse, bifrostErr
+			return redactGigaChatRawValue(rawRequest), redactGigaChatRawValue(rawResponse), bifrostErr
 		}
 
 		var gigaChatResponse GigaChatChatStreamResponse
@@ -526,7 +526,7 @@ func parseGigaChatStreamError(responseBody []byte, providerName schemas.ModelPro
 		},
 	}
 	if message := gigaChatErrorMessage(errorResp); message != "" {
-		bifrostErr.Error.Message = message
+		bifrostErr.Error.Message = redactGigaChatSensitiveText(message)
 	} else {
 		bifrostErr.Error.Message = fmt.Sprintf("GigaChat API error (status %d)", statusCode)
 	}

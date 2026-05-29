@@ -17,6 +17,9 @@ func testGigaChatErrors(t *testing.T) {
 	t.Run("ParsesOAuthPayloads", testGigaChatErrorParsesOAuthPayloads)
 	t.Run("UsesFallbackForNonJSON", testGigaChatErrorUsesFallbackForNonJSON)
 	t.Run("RedactsRawPayloads", testGigaChatErrorRedactsRawPayloads)
+	t.Run("RedactsExistingRawResponse", testGigaChatErrorRedactsExistingRawResponse)
+	t.Run("RedactsStreamingCallbackRawResponse", testGigaChatErrorRedactsStreamingCallbackRawResponse)
+	t.Run("PreservesSafeRawPayloadOrder", testGigaChatErrorPreservesSafeRawPayloadOrder)
 	t.Run("RedactsTextPayloads", testGigaChatErrorRedactsTextPayloads)
 }
 
@@ -106,12 +109,64 @@ func testGigaChatErrorRedactsRawPayloads(t *testing.T) {
 func testGigaChatErrorRedactsTextPayloads(t *testing.T) {
 	t.Parallel()
 
-	payload := []byte(`error: Authorization Bearer super-secret-token failed; Basic super-secret-basic rejected`)
+	payload := []byte(`error: authorization bearer super-secret-token failed; access_token=super-secret-access; Basic super-secret-basic rejected`)
 	redacted := string(redactGigaChatRawPayload(payload))
-	for _, secret := range []string{"super-secret-token", "super-secret-basic"} {
+	for _, secret := range []string{"super-secret-token", "super-secret-access", "super-secret-basic"} {
 		if strings.Contains(redacted, secret) {
 			t.Fatalf("text payload leaked %q in %s", secret, redacted)
 		}
+	}
+}
+
+func testGigaChatErrorRedactsExistingRawResponse(t *testing.T) {
+	t.Parallel()
+
+	ctx := testBifrostContext()
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseResponse(resp)
+	resp.SetStatusCode(http.StatusBadRequest)
+	resp.SetBodyString(`{"status":400,"message":"authorization bearer super-secret-token","access_token":"super-secret-token"}`)
+
+	bifrostErr := ParseGigaChatError(resp, schemas.GigaChat)
+	enriched := enrichGigaChatError(ctx, bifrostErr, nil, nil, false, true)
+	output := enriched.String() + stringifyGigaChatRaw(enriched.ExtraFields.RawResponse)
+	if strings.Contains(output, "super-secret-token") {
+		t.Fatalf("existing raw response leaked secret in %s", output)
+	}
+	if !strings.Contains(output, "redacted") {
+		t.Fatalf("expected redacted marker in existing raw response, got %s", output)
+	}
+}
+
+func testGigaChatErrorRedactsStreamingCallbackRawResponse(t *testing.T) {
+	t.Parallel()
+
+	handler := handleGigaChatChatStreamResponse(schemas.GigaChat)
+	var response schemas.BifrostChatResponse
+	_, rawResponse, bifrostErr := handler(
+		[]byte(`{"status":401,"message":"bearer super-secret-token","access_token":"super-secret-token"}`),
+		&response,
+		[]byte(`{"model":"GigaChat"}`),
+		true,
+		true,
+	)
+	if bifrostErr == nil {
+		t.Fatal("expected streaming error, got nil")
+	}
+
+	output := bifrostErr.String() + stringifyGigaChatRaw(rawResponse)
+	if strings.Contains(output, "super-secret-token") {
+		t.Fatalf("streaming raw response leaked secret in %s", output)
+	}
+}
+
+func testGigaChatErrorPreservesSafeRawPayloadOrder(t *testing.T) {
+	t.Parallel()
+
+	payload := []byte(`{"z":1,"a":2,"message":"safe"}`)
+	redacted := redactGigaChatRawPayload(payload)
+	if string(redacted) != string(payload) {
+		t.Fatalf("safe payload order changed: got %s, want %s", redacted, payload)
 	}
 }
 

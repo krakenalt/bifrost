@@ -1,6 +1,8 @@
 package gigachat
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
 	"strconv"
 	"strings"
@@ -39,6 +41,7 @@ func ParseGigaChatError(resp *fasthttp.Response, providerName schemas.ModelProvi
 			bifrostErr.Error.Message = "GigaChat API error"
 		}
 	}
+	bifrostErr.Error.Message = redactGigaChatSensitiveText(bifrostErr.Error.Message)
 
 	bifrostErr.ExtraFields.Provider = providerName
 	return bifrostErr
@@ -54,16 +57,20 @@ func gigaChatErrorMessage(errorResp GigaChatErrorResponse) string {
 }
 
 func gigaChatErrorCode(errorResp GigaChatErrorResponse) (string, bool) {
-	switch code := errorResp.Code.(type) {
-	case nil:
+	code := bytes.TrimSpace(errorResp.Code)
+	if len(code) == 0 || bytes.Equal(code, []byte("null")) {
 		return "", false
-	case float64:
-		return strconv.Itoa(int(code)), true
-	case string:
-		trimmed := strings.TrimSpace(code)
-		return trimmed, trimmed != ""
-	default:
-		trimmed := strings.TrimSpace(fmt.Sprint(code))
+	}
+
+	if len(code) >= 2 && code[0] == '"' {
+		var value string
+		if err := json.Unmarshal(code, &value); err != nil {
+			return "", false
+		}
+		trimmed := strings.TrimSpace(value)
 		return trimmed, trimmed != ""
 	}
+
+	trimmed := strings.TrimSpace(string(code))
+	return trimmed, trimmed != ""
 }
