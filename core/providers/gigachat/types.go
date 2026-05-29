@@ -171,6 +171,128 @@ type GigaChatEmbeddingUsage struct {
 	TotalTokens  int `json:"total_tokens,omitempty"`
 }
 
+// # RESPONSES TYPES
+
+// GigaChatResponsesRequest is the v2 chat completions request body used for Bifrost Responses.
+type GigaChatResponsesRequest struct {
+	Model         string                         `json:"model,omitempty"`
+	Messages      []GigaChatResponsesMessage     `json:"messages"`
+	AssistantID   *string                        `json:"assistant_id,omitempty"`
+	ToolsStateID  *string                        `json:"tools_state_id,omitempty"`
+	ModelOptions  *GigaChatResponsesModelOptions `json:"model_options,omitempty"`
+	FilterConfig  map[string]interface{}         `json:"filter_config,omitempty"`
+	Storage       interface{}                    `json:"storage,omitempty"`
+	RankerOptions map[string]interface{}         `json:"ranker_options,omitempty"`
+	ToolConfig    *GigaChatResponsesToolConfig   `json:"tool_config,omitempty"`
+	Tools         []GigaChatResponsesTool        `json:"tools,omitempty"`
+	UserInfo      map[string]interface{}         `json:"user_info,omitempty"`
+	Stream        *bool                          `json:"stream,omitempty"`
+	DisableFilter *bool                          `json:"disable_filter,omitempty"`
+	Flags         []string                       `json:"flags,omitempty"`
+	ExtraParams   map[string]interface{}         `json:"-"`
+}
+
+// GetExtraParams returns provider-specific passthrough fields.
+func (request *GigaChatResponsesRequest) GetExtraParams() map[string]interface{} {
+	if request == nil || request.ExtraParams == nil {
+		return make(map[string]interface{}, 0)
+	}
+	return request.ExtraParams
+}
+
+// GigaChatResponsesModelOptions contains v2 generation controls.
+type GigaChatResponsesModelOptions struct {
+	Preset              *string                          `json:"preset,omitempty"`
+	Temperature         *float64                         `json:"temperature,omitempty"`
+	TopP                *float64                         `json:"top_p,omitempty"`
+	MaxTokens           *int                             `json:"max_tokens,omitempty"`
+	RepetitionPenalty   *float64                         `json:"repetition_penalty,omitempty"`
+	UpdateInterval      *float64                         `json:"update_interval,omitempty"`
+	UnnormalizedHistory *bool                            `json:"unnormalized_history,omitempty"`
+	TopLogProbs         *int                             `json:"top_logprobs,omitempty"`
+	Reasoning           *GigaChatResponsesReasoning      `json:"reasoning,omitempty"`
+	ResponseFormat      *GigaChatResponsesResponseFormat `json:"response_format,omitempty"`
+	ExtraParams         map[string]interface{}           `json:"-"`
+}
+
+// GigaChatResponsesReasoning contains GigaChat v2 reasoning controls.
+type GigaChatResponsesReasoning struct {
+	Effort string `json:"effort,omitempty"`
+}
+
+// GigaChatResponsesResponseFormat contains GigaChat v2 structured output controls.
+type GigaChatResponsesResponseFormat struct {
+	Type   string      `json:"type"`
+	Schema interface{} `json:"schema,omitempty"`
+	Strict *bool       `json:"strict,omitempty"`
+	Regex  *string     `json:"regex,omitempty"`
+}
+
+// GigaChatResponsesMessage is a v2 chat message.
+type GigaChatResponsesMessage struct {
+	Role         string                         `json:"role"`
+	MessageID    *string                        `json:"message_id,omitempty"`
+	Content      []GigaChatResponsesContentPart `json:"content,omitempty"`
+	ToolsStateID *string                        `json:"tools_state_id,omitempty"`
+	FunctionCall *GigaChatResponsesFunctionCall `json:"function_call,omitempty"`
+	FinishReason *string                        `json:"finish_reason,omitempty"`
+	ExtraParams  map[string]interface{}         `json:"-"`
+}
+
+// GigaChatResponsesContentPart is a v2 multipart message content item.
+type GigaChatResponsesContentPart struct {
+	Text           *string                          `json:"text,omitempty"`
+	Files          []GigaChatResponsesContentFile   `json:"files,omitempty"`
+	FunctionCall   *GigaChatResponsesFunctionCall   `json:"function_call,omitempty"`
+	FunctionResult *GigaChatResponsesFunctionResult `json:"function_result,omitempty"`
+	InlineData     map[string]interface{}           `json:"inline_data,omitempty"`
+}
+
+// GigaChatResponsesContentFile is a v2 file reference.
+type GigaChatResponsesContentFile struct {
+	ID     string  `json:"id"`
+	Target *string `json:"target,omitempty"`
+	MIME   *string `json:"mime,omitempty"`
+}
+
+// GigaChatResponsesFunctionCall is a v2 function call content item.
+type GigaChatResponsesFunctionCall struct {
+	Name      string      `json:"name"`
+	Arguments interface{} `json:"arguments"`
+}
+
+// GigaChatResponsesFunctionResult is a v2 function result content item.
+type GigaChatResponsesFunctionResult struct {
+	Name   string      `json:"name"`
+	Result interface{} `json:"result"`
+}
+
+// GigaChatResponsesToolConfig controls v2 tool invocation policy.
+type GigaChatResponsesToolConfig struct {
+	Mode         string  `json:"mode,omitempty"`
+	ToolName     *string `json:"tool_name,omitempty"`
+	FunctionName *string `json:"function_name,omitempty"`
+}
+
+// GigaChatResponsesTool is a v2 tool definition.
+type GigaChatResponsesTool struct {
+	Functions *GigaChatResponsesFunctionsTool `json:"functions,omitempty"`
+}
+
+// GigaChatResponsesFunctionsTool wraps client-defined function specifications.
+type GigaChatResponsesFunctionsTool struct {
+	Specifications []GigaChatResponsesFunctionSpecification `json:"specifications,omitempty"`
+}
+
+// GigaChatResponsesFunctionSpecification describes a client-defined function.
+type GigaChatResponsesFunctionSpecification struct {
+	Name             string                          `json:"name"`
+	Description      *string                         `json:"description,omitempty"`
+	Parameters       *schemas.ToolFunctionParameters `json:"parameters"`
+	FewShotExamples  []map[string]interface{}        `json:"few_shot_examples,omitempty"`
+	ReturnParameters map[string]interface{}          `json:"return_parameters,omitempty"`
+}
+
 // # ERROR TYPES
 
 // GigaChatErrorResponse is the common REST API error shape used by GigaChat.
