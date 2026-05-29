@@ -21,6 +21,7 @@ type GigaChatProvider struct {
 	sendBackRawRequest   bool
 	sendBackRawResponse  bool
 	customProviderConfig *schemas.CustomProviderConfig
+	tokenCache           *gigaChatTokenCache
 }
 
 // NewGigaChatProvider creates a new GigaChat provider instance.
@@ -56,6 +57,7 @@ func NewGigaChatProvider(config *schemas.ProviderConfig, logger schemas.Logger) 
 		sendBackRawRequest:   config.SendBackRawRequest,
 		sendBackRawResponse:  config.SendBackRawResponse,
 		customProviderConfig: config.CustomProviderConfig,
+		tokenCache:           newGigaChatTokenCache(time.Now),
 	}, nil
 }
 
