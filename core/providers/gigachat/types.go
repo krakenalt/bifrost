@@ -293,6 +293,29 @@ type GigaChatResponsesFunctionSpecification struct {
 	ReturnParameters map[string]interface{}          `json:"return_parameters,omitempty"`
 }
 
+// GigaChatResponsesResponse is the v2 chat completions response body used for Bifrost Responses.
+type GigaChatResponsesResponse struct {
+	ID                string                    `json:"id,omitempty"`
+	Object            string                    `json:"object,omitempty"`
+	Created           int                       `json:"created,omitempty"`
+	Model             string                    `json:"model,omitempty"`
+	Choices           []GigaChatResponsesChoice `json:"choices,omitempty"`
+	Usage             *GigaChatChatUsage        `json:"usage,omitempty"`
+	ThreadID          *string                   `json:"thread_id,omitempty"`
+	MessageID         *string                   `json:"message_id,omitempty"`
+	ToolsStateID      *string                   `json:"tools_state_id,omitempty"`
+	SystemFingerprint string                    `json:"system_fingerprint,omitempty"`
+	ExtraParams       map[string]interface{}    `json:"-"`
+}
+
+// GigaChatResponsesChoice is a single v2 completion choice.
+type GigaChatResponsesChoice struct {
+	Index        int                       `json:"index"`
+	Message      *GigaChatResponsesMessage `json:"message,omitempty"`
+	FinishReason *string                   `json:"finish_reason,omitempty"`
+	LogProbs     *schemas.BifrostLogProbs  `json:"logprobs,omitempty"`
+}
+
 // # ERROR TYPES
 
 // GigaChatErrorResponse is the common REST API error shape used by GigaChat.

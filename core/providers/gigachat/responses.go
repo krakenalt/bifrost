@@ -1,6 +1,7 @@
 package gigachat
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"sort"
@@ -54,6 +55,239 @@ func ToGigaChatResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) (*G
 		return nil, err
 	}
 	return gigaChatReq, nil
+}
+
+// ToBifrostResponsesResponse converts a GigaChat v2 chat completions response to Bifrost Responses format.
+func ToBifrostResponsesResponse(providerName schemas.ModelProvider, response *GigaChatResponsesResponse) *schemas.BifrostResponsesResponse {
+	if response == nil {
+		return nil
+	}
+
+	output := make([]schemas.ResponsesMessage, 0, len(response.Choices))
+	var status *string
+	var incompleteDetails *schemas.ResponsesResponseIncompleteDetails
+	var stopReason *string
+	for _, choice := range response.Choices {
+		output = append(output, toBifrostGigaChatResponsesChoiceOutput(choice, response.MessageID)...)
+
+		finishReason := choice.FinishReason
+		if finishReason == nil && choice.Message != nil {
+			finishReason = choice.Message.FinishReason
+		}
+		if mappedStatus, mappedIncompleteDetails, mappedStopReason := toBifrostGigaChatResponsesStatus(finishReason); mappedStatus != nil {
+			status = mappedStatus
+			incompleteDetails = mappedIncompleteDetails
+			stopReason = mappedStopReason
+			if *mappedStatus == "incomplete" {
+				break
+			}
+		}
+	}
+
+	bifrostResponse := &schemas.BifrostResponsesResponse{
+		Object:            "response",
+		CreatedAt:         response.Created,
+		Model:             response.Model,
+		Output:            output,
+		Status:            status,
+		IncompleteDetails: incompleteDetails,
+		StopReason:        stopReason,
+		ExtraFields: schemas.BifrostResponseExtraFields{
+			Provider: providerName,
+		},
+	}
+	if strings.TrimSpace(response.ID) != "" {
+		bifrostResponse.ID = &response.ID
+	}
+	if usage := toBifrostGigaChatUsage(response.Usage); usage != nil {
+		bifrostResponse.Usage = usage.ToResponsesResponseUsage()
+	}
+	bifrostResponse.ProviderExtraFields = toBifrostGigaChatResponsesProviderExtraFields(response)
+
+	return bifrostResponse
+}
+
+func toBifrostGigaChatResponsesChoiceOutput(choice GigaChatResponsesChoice, fallbackMessageID *string) []schemas.ResponsesMessage {
+	if choice.Message == nil {
+		return nil
+	}
+
+	message := choice.Message
+	messageID := message.MessageID
+	if messageID == nil || strings.TrimSpace(*messageID) == "" {
+		messageID = fallbackMessageID
+	}
+	output := make([]schemas.ResponsesMessage, 0, len(message.Content)+1)
+	contentBlocks := make([]schemas.ResponsesMessageContentBlock, 0, len(message.Content))
+	hasFunctionCall := false
+	for index, part := range message.Content {
+		if part.Text != nil {
+			contentBlocks = append(contentBlocks, schemas.ResponsesMessageContentBlock{
+				Type: schemas.ResponsesOutputMessageContentTypeText,
+				Text: part.Text,
+				ResponsesOutputMessageContentText: &schemas.ResponsesOutputMessageContentText{
+					Annotations: []schemas.ResponsesOutputMessageContentTextAnnotation{},
+					LogProbs:    []schemas.ResponsesOutputMessageContentTextLogProb{},
+				},
+			})
+		}
+		if part.FunctionCall != nil {
+			hasFunctionCall = true
+			if toolCall := toBifrostGigaChatResponsesFunctionCall(messageID, index, part.FunctionCall); toolCall != nil {
+				output = append(output, *toolCall)
+			}
+		}
+		if part.FunctionResult != nil {
+			if toolResult := toBifrostGigaChatResponsesFunctionResult(messageID, index, part.FunctionResult); toolResult != nil {
+				output = append(output, *toolResult)
+			}
+		}
+	}
+	if len(contentBlocks) > 0 {
+		messageType := schemas.ResponsesMessageTypeMessage
+		role := schemas.ResponsesInputMessageRoleAssistant
+		if strings.TrimSpace(message.Role) != "" {
+			role = schemas.ResponsesMessageRoleType(message.Role)
+		}
+		output = append([]schemas.ResponsesMessage{{
+			ID:     messageID,
+			Type:   &messageType,
+			Role:   &role,
+			Status: schemas.Ptr("completed"),
+			Content: &schemas.ResponsesMessageContent{
+				ContentBlocks: contentBlocks,
+			},
+		}}, output...)
+	}
+	if !hasFunctionCall && message.FunctionCall != nil {
+		if toolCall := toBifrostGigaChatResponsesFunctionCall(messageID, 0, message.FunctionCall); toolCall != nil {
+			output = append(output, *toolCall)
+		}
+	}
+	return output
+}
+
+func toBifrostGigaChatResponsesFunctionCall(messageID *string, index int, functionCall *GigaChatResponsesFunctionCall) *schemas.ResponsesMessage {
+	if functionCall == nil || strings.TrimSpace(functionCall.Name) == "" {
+		return nil
+	}
+
+	itemID := toBifrostGigaChatResponsesItemID("fc", messageID, index)
+	arguments := stringifyGigaChatResponsesPayload(functionCall.Arguments)
+	messageType := schemas.ResponsesMessageTypeFunctionCall
+	role := schemas.ResponsesInputMessageRoleAssistant
+	return &schemas.ResponsesMessage{
+		ID:     &itemID,
+		Type:   &messageType,
+		Role:   &role,
+		Status: schemas.Ptr("completed"),
+		ResponsesToolMessage: &schemas.ResponsesToolMessage{
+			CallID:    &itemID,
+			Name:      schemas.Ptr(strings.TrimSpace(functionCall.Name)),
+			Arguments: &arguments,
+		},
+	}
+}
+
+func toBifrostGigaChatResponsesFunctionResult(messageID *string, index int, functionResult *GigaChatResponsesFunctionResult) *schemas.ResponsesMessage {
+	if functionResult == nil || strings.TrimSpace(functionResult.Name) == "" {
+		return nil
+	}
+
+	itemID := toBifrostGigaChatResponsesItemID("fr", messageID, index)
+	output := stringifyGigaChatResponsesPayload(functionResult.Result)
+	messageType := schemas.ResponsesMessageTypeFunctionCallOutput
+	return &schemas.ResponsesMessage{
+		ID:     &itemID,
+		Type:   &messageType,
+		Status: schemas.Ptr("completed"),
+		ResponsesToolMessage: &schemas.ResponsesToolMessage{
+			CallID: &itemID,
+			Name:   schemas.Ptr(strings.TrimSpace(functionResult.Name)),
+			Output: &schemas.ResponsesToolMessageOutputStruct{
+				ResponsesToolCallOutputStr: &output,
+			},
+		},
+	}
+}
+
+func toBifrostGigaChatResponsesItemID(prefix string, messageID *string, index int) string {
+	if messageID != nil && strings.TrimSpace(*messageID) != "" {
+		if index == 0 {
+			return strings.TrimSpace(*messageID)
+		}
+		return fmt.Sprintf("%s_%s_%d", prefix, strings.TrimSpace(*messageID), index)
+	}
+	return fmt.Sprintf("%s_%d", prefix, index)
+}
+
+func stringifyGigaChatResponsesPayload(payload interface{}) string {
+	if payload == nil {
+		return "{}"
+	}
+	if text, ok := payload.(string); ok {
+		trimmed := strings.TrimSpace(text)
+		if trimmed == "" {
+			return "{}"
+		}
+		var compacted bytes.Buffer
+		if json.Compact(&compacted, []byte(trimmed)) == nil {
+			return compacted.String()
+		}
+		return trimmed
+	}
+
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return "{}"
+	}
+	var compacted bytes.Buffer
+	if json.Compact(&compacted, raw) == nil {
+		return compacted.String()
+	}
+	return string(raw)
+}
+
+func toBifrostGigaChatResponsesStatus(finishReason *string) (*string, *schemas.ResponsesResponseIncompleteDetails, *string) {
+	mappedFinishReason := toBifrostGigaChatFinishReason(finishReason)
+	if mappedFinishReason == nil || strings.TrimSpace(*mappedFinishReason) == "" {
+		return nil, nil, nil
+	}
+
+	stopReason := strings.TrimSpace(*mappedFinishReason)
+	switch stopReason {
+	case string(schemas.BifrostFinishReasonLength):
+		return schemas.Ptr("incomplete"), &schemas.ResponsesResponseIncompleteDetails{Reason: "max_output_tokens"}, &stopReason
+	default:
+		return schemas.Ptr("completed"), nil, &stopReason
+	}
+}
+
+func toBifrostGigaChatResponsesProviderExtraFields(response *GigaChatResponsesResponse) map[string]interface{} {
+	if response == nil {
+		return nil
+	}
+
+	fields := make(map[string]interface{})
+	if response.ThreadID != nil && strings.TrimSpace(*response.ThreadID) != "" {
+		fields["thread_id"] = *response.ThreadID
+	}
+	if response.MessageID != nil && strings.TrimSpace(*response.MessageID) != "" {
+		fields["message_id"] = *response.MessageID
+	}
+	if response.ToolsStateID != nil && strings.TrimSpace(*response.ToolsStateID) != "" {
+		fields["tools_state_id"] = *response.ToolsStateID
+	}
+	if strings.TrimSpace(response.SystemFingerprint) != "" {
+		fields["system_fingerprint"] = response.SystemFingerprint
+	}
+	if len(response.ExtraParams) > 0 {
+		fields["gigachat_extra"] = response.ExtraParams
+	}
+	if len(fields) == 0 {
+		return nil
+	}
+	return fields
 }
 
 func applyGigaChatResponsesParams(gigaChatReq *GigaChatResponsesRequest, params *schemas.ResponsesParameters) error {
