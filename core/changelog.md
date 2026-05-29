@@ -1,3 +1,4 @@
+- feat: add GigaChat provider skeleton
 - feat: migrate Azure provider to the v1 API and remove `api_version` from `AzureKeyConfig` (#3661, #3756)
 - feat: add `ConfigMarshallerPlugin` interface so plugins can control config storage and redaction round-trips (#3651)
 - feat: forward `x-bf-eh-*` extra headers as `gen_ai.request.extra_header.*` span attributes (#3730)

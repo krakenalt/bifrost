@@ -50,6 +50,7 @@ const (
 	Perplexity  ModelProvider = "perplexity"
 	Cerebras    ModelProvider = "cerebras"
 	Gemini      ModelProvider = "gemini"
+	GigaChat    ModelProvider = "gigachat"
 	OpenRouter  ModelProvider = "openrouter"
 	Elevenlabs  ModelProvider = "elevenlabs"
 	HuggingFace ModelProvider = "huggingface"
@@ -80,6 +81,7 @@ var StandardProviders = []ModelProvider{
 	Cerebras,
 	Cohere,
 	Gemini,
+	GigaChat,
 	Groq,
 	Mistral,
 	Ollama,
@@ -1667,15 +1669,15 @@ func (e *ErrorField) UnmarshalJSON(data []byte) error {
 
 // BifrostErrorExtraFields contains additional fields in an error response.
 type BifrostErrorExtraFields struct {
-	Provider                  ModelProvider              `json:"provider,omitempty"`
-	OriginalModelRequested    string                     `json:"original_model_requested,omitempty"`
-	ResolvedModelUsed         string                     `json:"resolved_model_used,omitempty"`
-	RequestType               RequestType                `json:"request_type,omitempty"`
-	MCPRequestType            MCPRequestType             `json:"mcp_request_type,omitempty"`
-	RawRequest                interface{}                `json:"raw_request,omitempty"`
-	RawResponse               interface{}                `json:"raw_response,omitempty"`
-	ConvertedRequestType      RequestType                `json:"converted_request_type,omitempty"`
-	DroppedCompatPluginParams []string                   `json:"dropped_compat_plugin_params,omitempty"`
-	KeyStatuses               []KeyStatus                `json:"key_statuses,omitempty"`
-	MCPAuthRequired           *MCPAuthRequiredError      `json:"mcp_auth_required,omitempty"` // Set when a per-user MCP tool requires the caller to complete an inline auth flow (OAuth or headers)
+	Provider                  ModelProvider         `json:"provider,omitempty"`
+	OriginalModelRequested    string                `json:"original_model_requested,omitempty"`
+	ResolvedModelUsed         string                `json:"resolved_model_used,omitempty"`
+	RequestType               RequestType           `json:"request_type,omitempty"`
+	MCPRequestType            MCPRequestType        `json:"mcp_request_type,omitempty"`
+	RawRequest                interface{}           `json:"raw_request,omitempty"`
+	RawResponse               interface{}           `json:"raw_response,omitempty"`
+	ConvertedRequestType      RequestType           `json:"converted_request_type,omitempty"`
+	DroppedCompatPluginParams []string              `json:"dropped_compat_plugin_params,omitempty"`
+	KeyStatuses               []KeyStatus           `json:"key_statuses,omitempty"`
+	MCPAuthRequired           *MCPAuthRequiredError `json:"mcp_auth_required,omitempty"` // Set when a per-user MCP tool requires the caller to complete an inline auth flow (OAuth or headers)
 }
