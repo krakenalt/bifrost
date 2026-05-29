@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	openaiProvider "github.com/maximhq/bifrost/core/providers/openai"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	schemas "github.com/maximhq/bifrost/core/schemas"
 	"github.com/valyala/fasthttp"
@@ -157,6 +158,59 @@ func (provider *GigaChatProvider) chatCompletion(ctx *schemas.BifrostContext, ke
 	return response, nil
 }
 
+func (provider *GigaChatProvider) chatCompletionStream(
+	ctx *schemas.BifrostContext,
+	postHookRunner schemas.PostHookRunner,
+	postHookSpanFinalizer func(context.Context),
+	key schemas.Key,
+	request *schemas.BifrostChatRequest,
+	forceRefresh bool,
+) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	ctx = ensureGigaChatContext(ctx)
+
+	headers, bifrostErr := provider.buildAuthHeaders(ctx, key)
+	if forceRefresh {
+		headers, bifrostErr = provider.refreshAuthHeaders(ctx, key)
+	}
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	client, clientErr := buildGigaChatTLSClient(provider.streamingClient, key.GigaChatKeyConfig)
+	if clientErr != nil {
+		return nil, newGigaChatConfigurationError(clientErr.Error())
+	}
+
+	sendBackRawRequest := providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest)
+	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
+	providerName := provider.GetProviderKey()
+
+	return openaiProvider.HandleOpenAIChatCompletionStreaming(
+		ctx,
+		client,
+		buildGigaChatRequestURL(ctx, resolveBaseURL(key, provider.networkConfig), gigaChatAPIVersionV1, "/chat/completions", provider.customProviderConfig, schemas.ChatCompletionStreamRequest),
+		request,
+		headers,
+		nil,
+		provider.networkConfig.StreamIdleTimeoutInSeconds,
+		sendBackRawRequest,
+		sendBackRawResponse,
+		providerName,
+		postHookRunner,
+		func(request *schemas.BifrostChatRequest) (providerUtils.RequestBodyWithExtraParams, error) {
+			return ToGigaChatChatStreamRequest(ctx, request)
+		},
+		handleGigaChatChatStreamResponse(providerName),
+		func(resp *fasthttp.Response) *schemas.BifrostError {
+			return ParseGigaChatError(resp, providerName)
+		},
+		nil,
+		withGigaChatChatResponseProvider(providerName),
+		provider.logger,
+		postHookSpanFinalizer,
+	)
+}
+
 func ensureGigaChatContext(ctx *schemas.BifrostContext) *schemas.BifrostContext {
 	if ctx != nil {
 		return ctx
@@ -200,9 +254,17 @@ func (provider *GigaChatProvider) ChatCompletion(ctx *schemas.BifrostContext, ke
 	return response, bifrostErr
 }
 
-// ChatCompletionStream is not supported by the GigaChat provider skeleton.
-func (provider *GigaChatProvider) ChatCompletionStream(_ *schemas.BifrostContext, _ schemas.PostHookRunner, _ func(context.Context), _ schemas.Key, _ *schemas.BifrostChatRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
-	return nil, provider.unsupported(schemas.ChatCompletionStreamRequest)
+// ChatCompletionStream sends a streaming v1 chat completions request to GigaChat.
+func (provider *GigaChatProvider) ChatCompletionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostChatRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	if err := providerUtils.CheckOperationAllowed(schemas.GigaChat, provider.customProviderConfig, schemas.ChatCompletionStreamRequest); err != nil {
+		return nil, err
+	}
+
+	responseChan, bifrostErr := provider.chatCompletionStream(ctx, postHookRunner, postHookSpanFinalizer, key, request, false)
+	if isGigaChatUnauthorizedError(bifrostErr) {
+		return provider.chatCompletionStream(ctx, postHookRunner, postHookSpanFinalizer, key, request, true)
+	}
+	return responseChan, bifrostErr
 }
 
 // Responses is not supported by the GigaChat provider skeleton.

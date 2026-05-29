@@ -79,6 +79,34 @@ type GigaChatChatChoice struct {
 	LogProbs     *schemas.BifrostLogProbs `json:"logprobs,omitempty"`
 }
 
+// GigaChatChatStreamResponse is a v1 chat completions SSE chunk.
+type GigaChatChatStreamResponse struct {
+	ID                string                     `json:"id,omitempty"`
+	Choices           []GigaChatChatStreamChoice `json:"choices,omitempty"`
+	Created           int                        `json:"created,omitempty"`
+	Model             string                     `json:"model,omitempty"`
+	Object            string                     `json:"object,omitempty"`
+	SystemFingerprint string                     `json:"system_fingerprint,omitempty"`
+	Usage             *GigaChatChatUsage         `json:"usage,omitempty"`
+	ExtraParams       map[string]interface{}     `json:"-"`
+}
+
+// GigaChatChatStreamChoice is a single streaming choice.
+type GigaChatChatStreamChoice struct {
+	Index        int                      `json:"index"`
+	Delta        *GigaChatChatStreamDelta `json:"delta,omitempty"`
+	FinishReason *string                  `json:"finish_reason,omitempty"`
+	LogProbs     *schemas.BifrostLogProbs `json:"logprobs,omitempty"`
+}
+
+// GigaChatChatStreamDelta is the partial assistant message in an SSE chunk.
+type GigaChatChatStreamDelta struct {
+	Role             *string               `json:"role,omitempty"`
+	Content          *string               `json:"content,omitempty"`
+	FunctionCall     *GigaChatFunctionCall `json:"function_call,omitempty"`
+	FunctionsStateID *string               `json:"functions_state_id,omitempty"`
+}
+
 // GigaChatChatUsage is token usage returned by GigaChat chat completions.
 type GigaChatChatUsage struct {
 	PromptTokens          int `json:"prompt_tokens,omitempty"`

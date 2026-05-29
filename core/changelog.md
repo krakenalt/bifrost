@@ -1,3 +1,4 @@
+- feat: implement GigaChat v1 chat streaming
 - feat: implement GigaChat v1 chat completions
 - feat: add GigaChat inference auth headers
 - fix: avoid copying GigaChat fasthttp client internals

@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"sort"
 	"strings"
 
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	schemas "github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -54,6 +56,16 @@ func ToGigaChatChatRequest(_ *schemas.BifrostContext, bifrostReq *schemas.Bifros
 	return gigaChatReq, nil
 }
 
+// ToGigaChatChatStreamRequest converts a Bifrost chat request to a streaming GigaChat v1 request.
+func ToGigaChatChatStreamRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.BifrostChatRequest) (*GigaChatChatRequest, error) {
+	gigaChatReq, err := ToGigaChatChatRequest(ctx, bifrostReq)
+	if err != nil {
+		return nil, err
+	}
+	gigaChatReq.Stream = schemas.Ptr(true)
+	return gigaChatReq, nil
+}
+
 // ToBifrostChatResponse converts a GigaChat v1 chat response to Bifrost format.
 func ToBifrostChatResponse(providerName schemas.ModelProvider, response *GigaChatChatResponse) *schemas.BifrostChatResponse {
 	if response == nil {
@@ -82,6 +94,70 @@ func ToBifrostChatResponse(providerName schemas.ModelProvider, response *GigaCha
 		ExtraFields: schemas.BifrostResponseExtraFields{
 			Provider: providerName,
 		},
+	}
+}
+
+// ToBifrostChatStreamResponse converts a GigaChat v1 chat SSE chunk to Bifrost format.
+func ToBifrostChatStreamResponse(providerName schemas.ModelProvider, response *GigaChatChatStreamResponse) *schemas.BifrostChatResponse {
+	if response == nil {
+		return nil
+	}
+
+	choices := make([]schemas.BifrostResponseChoice, 0, len(response.Choices))
+	for _, choice := range response.Choices {
+		choices = append(choices, schemas.BifrostResponseChoice{
+			Index:        choice.Index,
+			FinishReason: toBifrostGigaChatFinishReason(choice.FinishReason),
+			LogProbs:     choice.LogProbs,
+			ChatStreamResponseChoice: &schemas.ChatStreamResponseChoice{
+				Delta: toBifrostGigaChatStreamDelta(choice.Index, choice.Delta),
+			},
+		})
+	}
+
+	return &schemas.BifrostChatResponse{
+		ID:                response.ID,
+		Choices:           choices,
+		Created:           response.Created,
+		Model:             response.Model,
+		Object:            response.Object,
+		SystemFingerprint: response.SystemFingerprint,
+		Usage:             toBifrostGigaChatUsage(response.Usage),
+		ExtraParams:       response.ExtraParams,
+		ExtraFields: schemas.BifrostResponseExtraFields{
+			Provider: providerName,
+		},
+	}
+}
+
+func handleGigaChatChatStreamResponse(providerName schemas.ModelProvider) func([]byte, *schemas.BifrostChatResponse, []byte, bool, bool) (interface{}, interface{}, *schemas.BifrostError) {
+	return func(responseBody []byte, response *schemas.BifrostChatResponse, requestBody []byte, sendBackRawRequest bool, sendBackRawResponse bool) (interface{}, interface{}, *schemas.BifrostError) {
+		if bifrostErr := parseGigaChatStreamError(responseBody, providerName); bifrostErr != nil {
+			rawRequest, rawResponse, _ := providerUtils.HandleProviderResponse(responseBody, &GigaChatErrorResponse{}, requestBody, sendBackRawRequest, sendBackRawResponse)
+			return rawRequest, rawResponse, bifrostErr
+		}
+
+		var gigaChatResponse GigaChatChatStreamResponse
+		rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(responseBody, &gigaChatResponse, requestBody, sendBackRawRequest, sendBackRawResponse)
+		if bifrostErr != nil {
+			return rawRequest, rawResponse, bifrostErr
+		}
+
+		converted := ToBifrostChatStreamResponse(providerName, &gigaChatResponse)
+		if converted == nil {
+			return rawRequest, rawResponse, newGigaChatProviderResponseError("GigaChat chat completion stream response is empty", nil)
+		}
+		*response = *converted
+		return rawRequest, rawResponse, nil
+	}
+}
+
+func withGigaChatChatResponseProvider(providerName schemas.ModelProvider) func(*schemas.BifrostChatResponse) *schemas.BifrostChatResponse {
+	return func(response *schemas.BifrostChatResponse) *schemas.BifrostChatResponse {
+		if response != nil {
+			response.ExtraFields.Provider = providerName
+		}
+		return response
 	}
 }
 
@@ -229,6 +305,33 @@ func toBifrostGigaChatMessage(message *GigaChatChatMessage) *schemas.ChatMessage
 	return bifrostMessage
 }
 
+func toBifrostGigaChatStreamDelta(index int, delta *GigaChatChatStreamDelta) *schemas.ChatStreamResponseChoiceDelta {
+	if delta == nil {
+		return &schemas.ChatStreamResponseChoiceDelta{}
+	}
+
+	bifrostDelta := &schemas.ChatStreamResponseChoiceDelta{
+		Role:    delta.Role,
+		Content: delta.Content,
+	}
+	if delta.FunctionCall != nil {
+		arguments := compactGigaChatFunctionArguments(delta.FunctionCall.Arguments)
+		toolCallType := string(schemas.ChatToolTypeFunction)
+		bifrostDelta.ToolCalls = []schemas.ChatAssistantMessageToolCall{
+			{
+				Index: uint16(index),
+				Type:  &toolCallType,
+				ID:    delta.FunctionsStateID,
+				Function: schemas.ChatAssistantMessageToolCallFunction{
+					Name:      &delta.FunctionCall.Name,
+					Arguments: arguments,
+				},
+			},
+		}
+	}
+	return bifrostDelta
+}
+
 func compactGigaChatFunctionArguments(arguments json.RawMessage) string {
 	if len(arguments) == 0 {
 		return ""
@@ -265,4 +368,41 @@ func toBifrostGigaChatUsage(usage *GigaChatChatUsage) *schemas.BifrostLLMUsage {
 		}
 	}
 	return bifrostUsage
+}
+
+func parseGigaChatStreamError(responseBody []byte, providerName schemas.ModelProvider) *schemas.BifrostError {
+	var errorResp GigaChatErrorResponse
+	if err := json.Unmarshal(responseBody, &errorResp); err != nil {
+		return nil
+	}
+	if errorResp.Status == nil && errorResp.Code == nil && strings.TrimSpace(errorResp.Message) == "" {
+		return nil
+	}
+
+	statusCode := http.StatusBadGateway
+	if errorResp.Status != nil {
+		statusCode = *errorResp.Status
+	}
+
+	bifrostErr := &schemas.BifrostError{
+		IsBifrostError: false,
+		StatusCode:     &statusCode,
+		Error:          &schemas.ErrorField{},
+		ExtraFields: schemas.BifrostErrorExtraFields{
+			Provider: providerName,
+		},
+	}
+	if strings.TrimSpace(errorResp.Message) != "" {
+		bifrostErr.Error.Message = errorResp.Message
+	} else {
+		bifrostErr.Error.Message = fmt.Sprintf("GigaChat API error (status %d)", statusCode)
+	}
+	if errorResp.Code != nil {
+		code := fmt.Sprintf("%d", *errorResp.Code)
+		bifrostErr.Error.Code = &code
+	} else if errorResp.Status != nil {
+		code := fmt.Sprintf("%d", *errorResp.Status)
+		bifrostErr.Error.Code = &code
+	}
+	return bifrostErr
 }
