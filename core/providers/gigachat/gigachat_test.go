@@ -22,6 +22,7 @@ func TestGigachat(t *testing.T) {
 	t.Run("NewProvider", testNewGigaChatProvider)
 	t.Run("TrimBaseURL", testNewGigaChatProviderTrimsBaseURL)
 	t.Run("UnsupportedOperation", testGigaChatProviderUnsupportedOperation)
+	t.Run("ChatCompletion", testGigaChatChatCompletion)
 	t.Run("BuildsTLSClientWithCABundle", testGigaChatBuildsTLSClientWithCABundle)
 	t.Run("BuildsTLSClientWithCertificate", testGigaChatBuildsTLSClientWithCertificate)
 	t.Run("RejectsMissingCertificatePair", testGigaChatRejectsMissingCertificatePair)
@@ -74,7 +75,7 @@ func testGigaChatProviderUnsupportedOperation(t *testing.T) {
 		t.Fatalf("NewGigaChatProvider returned error: %v", err)
 	}
 
-	response, bifrostErr := provider.ChatCompletion(nil, schemas.Key{}, &schemas.BifrostChatRequest{})
+	response, bifrostErr := provider.TextCompletion(nil, schemas.Key{}, &schemas.BifrostTextCompletionRequest{})
 	if response != nil {
 		t.Fatalf("expected nil response, got %#v", response)
 	}
@@ -87,8 +88,8 @@ func testGigaChatProviderUnsupportedOperation(t *testing.T) {
 	if bifrostErr.ExtraFields.Provider != schemas.GigaChat {
 		t.Fatalf("provider mismatch: got %q, want %q", bifrostErr.ExtraFields.Provider, schemas.GigaChat)
 	}
-	if bifrostErr.ExtraFields.RequestType != schemas.ChatCompletionRequest {
-		t.Fatalf("request type mismatch: got %q, want %q", bifrostErr.ExtraFields.RequestType, schemas.ChatCompletionRequest)
+	if bifrostErr.ExtraFields.RequestType != schemas.TextCompletionRequest {
+		t.Fatalf("request type mismatch: got %q, want %q", bifrostErr.ExtraFields.RequestType, schemas.TextCompletionRequest)
 	}
 	if !strings.Contains(bifrostErr.Error.Message, "gigachat provider") {
 		t.Fatalf("unexpected error message: %q", bifrostErr.Error.Message)
