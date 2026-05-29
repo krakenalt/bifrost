@@ -195,6 +195,7 @@ const (
 	BifrostContextKeyVirtualKey        BifrostContextKey = "x-bf-vk"               // string
 	BifrostContextKeyAPIKeyName        BifrostContextKey = "x-bf-api-key"          // string (explicit key name selection)
 	BifrostContextKeyAPIKeyID          BifrostContextKey = "x-bf-api-key-id"       // string (explicit key ID selection, takes priority over name)
+	BifrostContextKeyDirectKey         BifrostContextKey = "x-bf-direct-key"       // schemas.Key (raw key supplied via x-bf-direct-key: true header; bypasses registered key pool)
 	BifrostContextKeyRequestID         BifrostContextKey = "request-id"            // string
 	BifrostContextKeyFallbackRequestID BifrostContextKey = "fallback-request-id"   // string
 
@@ -1669,15 +1670,15 @@ func (e *ErrorField) UnmarshalJSON(data []byte) error {
 
 // BifrostErrorExtraFields contains additional fields in an error response.
 type BifrostErrorExtraFields struct {
-	Provider                  ModelProvider         `json:"provider,omitempty"`
-	OriginalModelRequested    string                `json:"original_model_requested,omitempty"`
-	ResolvedModelUsed         string                `json:"resolved_model_used,omitempty"`
-	RequestType               RequestType           `json:"request_type,omitempty"`
-	MCPRequestType            MCPRequestType        `json:"mcp_request_type,omitempty"`
-	RawRequest                interface{}           `json:"raw_request,omitempty"`
-	RawResponse               interface{}           `json:"raw_response,omitempty"`
-	ConvertedRequestType      RequestType           `json:"converted_request_type,omitempty"`
-	DroppedCompatPluginParams []string              `json:"dropped_compat_plugin_params,omitempty"`
-	KeyStatuses               []KeyStatus           `json:"key_statuses,omitempty"`
-	MCPAuthRequired           *MCPAuthRequiredError `json:"mcp_auth_required,omitempty"` // Set when a per-user MCP tool requires the caller to complete an inline auth flow (OAuth or headers)
+	Provider                  ModelProvider              `json:"provider,omitempty"`
+	OriginalModelRequested    string                     `json:"original_model_requested,omitempty"`
+	ResolvedModelUsed         string                     `json:"resolved_model_used,omitempty"`
+	RequestType               RequestType                `json:"request_type,omitempty"`
+	MCPRequestType            MCPRequestType             `json:"mcp_request_type,omitempty"`
+	RawRequest                interface{}                `json:"raw_request,omitempty"`
+	RawResponse               interface{}                `json:"raw_response,omitempty"`
+	ConvertedRequestType      RequestType                `json:"converted_request_type,omitempty"`
+	DroppedCompatPluginParams []string                   `json:"dropped_compat_plugin_params,omitempty"`
+	KeyStatuses               []KeyStatus                `json:"key_statuses,omitempty"`
+	MCPAuthRequired           *MCPAuthRequiredError      `json:"mcp_auth_required,omitempty"` // Set when a per-user MCP tool requires the caller to complete an inline auth flow (OAuth or headers)
 }
