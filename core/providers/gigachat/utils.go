@@ -109,7 +109,7 @@ func buildGigaChatTLSClient(baseClient *fasthttp.Client, keyConfig *schemas.Giga
 		return baseClient, nil
 	}
 
-	client := *baseClient
+	client := providerUtils.CloneFastHTTPClientConfig(baseClient)
 	tlsConfig := client.TLSConfig
 	if tlsConfig == nil {
 		tlsConfig = &tls.Config{MinVersion: tls.VersionTLS12}
@@ -153,7 +153,7 @@ func buildGigaChatTLSClient(baseClient *fasthttp.Client, keyConfig *schemas.Giga
 	}
 
 	client.TLSConfig = tlsConfig
-	return &client, nil
+	return client, nil
 }
 
 func gigaChatKeyConfigHasTLSMaterial(keyConfig *schemas.GigaChatKeyConfig) bool {

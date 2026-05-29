@@ -1,3 +1,4 @@
+- fix: avoid copying GigaChat fasthttp client internals
 - feat: support GigaChat TLS certificate files
 - feat: add GigaChat password auth mode
 - feat: implement GigaChat OAuth token client

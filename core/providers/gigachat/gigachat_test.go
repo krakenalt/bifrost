@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/valyala/fasthttp"
 )
 
 func TestGigachat(t *testing.T) {
@@ -117,6 +118,12 @@ func testGigaChatBuildsTLSClientWithCABundle(t *testing.T) {
 	}
 	if provider.client.TLSConfig != nil && provider.client.TLSConfig.RootCAs != nil {
 		t.Fatal("base client TLS config was mutated")
+	}
+	if client.MaxConnsPerHost != provider.client.MaxConnsPerHost {
+		t.Fatalf("MaxConnsPerHost mismatch: got %d, want %d", client.MaxConnsPerHost, provider.client.MaxConnsPerHost)
+	}
+	if client.ConnPoolStrategy != fasthttp.FIFO {
+		t.Fatalf("ConnPoolStrategy mismatch: got %v", client.ConnPoolStrategy)
 	}
 }
 
