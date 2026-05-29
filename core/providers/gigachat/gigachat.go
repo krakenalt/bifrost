@@ -226,9 +226,107 @@ func (provider *GigaChatProvider) unsupported(requestType schemas.RequestType) *
 	return providerUtils.NewUnsupportedOperationError(requestType, provider.GetProviderKey())
 }
 
-// ListModels is not supported by the GigaChat provider skeleton.
-func (provider *GigaChatProvider) ListModels(_ *schemas.BifrostContext, _ []schemas.Key, _ *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
-	return nil, provider.unsupported(schemas.ListModelsRequest)
+func (provider *GigaChatProvider) listModelsByKey(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
+	response, bifrostErr := provider.listModelsByKeyWithRefresh(ctx, key, request, false)
+	if isGigaChatUnauthorizedError(bifrostErr) {
+		return provider.listModelsByKeyWithRefresh(ctx, key, request, true)
+	}
+	return response, bifrostErr
+}
+
+func (provider *GigaChatProvider) listModelsByKeyWithRefresh(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostListModelsRequest, forceRefresh bool) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
+	ctx = ensureGigaChatContext(ctx)
+
+	headers, bifrostErr := provider.buildAuthHeaders(ctx, key)
+	if forceRefresh {
+		headers, bifrostErr = provider.refreshAuthHeaders(ctx, key)
+	}
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	client, clientErr := buildGigaChatTLSClient(provider.client, key.GigaChatKeyConfig)
+	if clientErr != nil {
+		return nil, newGigaChatConfigurationError(clientErr.Error())
+	}
+
+	req := fasthttp.AcquireRequest()
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseRequest(req)
+	defer fasthttp.ReleaseResponse(resp)
+
+	for headerName, headerValue := range headers {
+		req.Header.Set(headerName, headerValue)
+	}
+	req.SetRequestURI(buildGigaChatRequestURL(ctx, resolveBaseURL(key, provider.networkConfig), gigaChatAPIVersionV1, "/models", provider.customProviderConfig, schemas.ListModelsRequest))
+	req.Header.SetMethod(http.MethodGet)
+	req.Header.SetContentType("application/json")
+	req.Header.Set("Accept", "application/json")
+
+	sendBackRawRequest := providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest)
+	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
+
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, client, req, resp)
+	defer wait()
+	if bifrostErr != nil {
+		bifrostErr.ExtraFields.Provider = provider.GetProviderKey()
+		return nil, providerUtils.EnrichError(ctx, bifrostErr, nil, nil, sendBackRawRequest, sendBackRawResponse)
+	}
+
+	providerResponseHeaders := providerUtils.ExtractProviderResponseHeaders(resp)
+	ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerResponseHeaders)
+
+	if resp.StatusCode() != fasthttp.StatusOK {
+		bifrostErr := ParseGigaChatError(resp, provider.GetProviderKey())
+		return nil, providerUtils.EnrichError(ctx, bifrostErr, nil, resp.Body(), sendBackRawRequest, sendBackRawResponse)
+	}
+
+	responseBody, err := providerUtils.CheckAndDecodeBody(resp)
+	if err != nil {
+		bifrostErr := newGigaChatProviderResponseError("failed to decode GigaChat models response", err)
+		return nil, providerUtils.EnrichError(ctx, bifrostErr, nil, resp.Body(), sendBackRawRequest, sendBackRawResponse)
+	}
+
+	gigaChatResponse := &GigaChatListModelsResponse{}
+	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(responseBody, gigaChatResponse, nil, sendBackRawRequest, sendBackRawResponse)
+	if bifrostErr != nil {
+		return nil, providerUtils.EnrichError(ctx, bifrostErr, nil, responseBody, sendBackRawRequest, sendBackRawResponse)
+	}
+
+	response := gigaChatResponse.ToBifrostListModelsResponse(provider.GetProviderKey(), key.Models, key.BlacklistedModels, key.Aliases, request.Unfiltered)
+	if response == nil {
+		return nil, newGigaChatProviderResponseError("GigaChat models response is empty", nil)
+	}
+	response.ExtraFields.Latency = latency.Milliseconds()
+	response.ExtraFields.ProviderResponseHeaders = providerResponseHeaders
+	if sendBackRawRequest {
+		response.ExtraFields.RawRequest = rawRequest
+	}
+	if sendBackRawResponse {
+		response.ExtraFields.RawResponse = rawResponse
+	}
+
+	return response, nil
+}
+
+// ListModels performs a v1 models request to GigaChat.
+func (provider *GigaChatProvider) ListModels(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
+	if err := providerUtils.CheckOperationAllowed(schemas.GigaChat, provider.customProviderConfig, schemas.ListModelsRequest); err != nil {
+		return nil, err
+	}
+	if request == nil {
+		request = &schemas.BifrostListModelsRequest{Provider: provider.GetProviderKey()}
+	} else if request.Provider == "" {
+		requestCopy := *request
+		requestCopy.Provider = provider.GetProviderKey()
+		request = &requestCopy
+	}
+	if len(keys) == 0 {
+		return providerUtils.HandleKeylessListModelsRequest(provider.GetProviderKey(), func() (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
+			return provider.listModelsByKey(ctx, schemas.Key{}, request)
+		})
+	}
+	return providerUtils.HandleMultipleListModelsRequests(ctx, keys, request, provider.listModelsByKey)
 }
 
 // TextCompletion is not supported by the GigaChat provider skeleton.

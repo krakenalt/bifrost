@@ -115,6 +115,22 @@ type GigaChatChatUsage struct {
 	PrecachedPromptTokens int `json:"precached_prompt_tokens,omitempty"`
 }
 
+// # MODELS TYPES
+
+// GigaChatListModelsResponse is the v1 models list response body.
+type GigaChatListModelsResponse struct {
+	Object string          `json:"object"`
+	Data   []GigaChatModel `json:"data"`
+}
+
+// GigaChatModel is a single model descriptor returned by GigaChat.
+type GigaChatModel struct {
+	ID      string `json:"id"`
+	Object  string `json:"object,omitempty"`
+	OwnedBy string `json:"owned_by,omitempty"`
+	Type    string `json:"type,omitempty"`
+}
+
 // # ERROR TYPES
 
 // GigaChatErrorResponse is the common REST API error shape used by GigaChat.
