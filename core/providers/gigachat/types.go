@@ -9,6 +9,12 @@ type GigaChatTokenResponse struct {
 	ExpiresAt   int64  `json:"expires_at"`
 }
 
+// GigaChatPasswordTokenResponse is returned by the SDK-backed password auth endpoint.
+type GigaChatPasswordTokenResponse struct {
+	Token     string `json:"tok"`
+	ExpiresAt int64  `json:"exp"`
+}
+
 // # ERROR TYPES
 
 // GigaChatErrorResponse is the common REST API error shape used by GigaChat.

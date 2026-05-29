@@ -1,3 +1,4 @@
+- feat: add GigaChat password auth mode
 - feat: implement GigaChat OAuth token client
 - feat: add GigaChat endpoint resolution helpers
 - feat: add GigaChat auth key configuration schema
