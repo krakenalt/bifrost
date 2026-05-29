@@ -22,6 +22,23 @@ import (
 
 const gigaChatOAuthRefreshLeeway = time.Minute
 
+const (
+	gigaChatAuthorizationHeader = "Authorization"
+	gigaChatUserAgentHeader     = "User-Agent"
+	gigaChatUserAgent           = "GigaChat-python-lib"
+)
+
+var gigaChatContextHeaders = map[string]string{
+	"authorization":  gigaChatAuthorizationHeader,
+	"x-session-id":   "X-Session-ID",
+	"x-request-id":   "X-Request-ID",
+	"x-service-id":   "X-Service-ID",
+	"x-operation-id": "X-Operation-ID",
+	"x-client-id":    "X-Client-ID",
+	"x-trace-id":     "X-Trace-ID",
+	"x-agent-id":     "X-Agent-ID",
+}
+
 type gigaChatCachedToken struct {
 	accessToken string
 	expiresAt   time.Time
@@ -48,7 +65,117 @@ func newGigaChatTokenCache(now func() time.Time) *gigaChatTokenCache {
 	}
 }
 
+func (provider *GigaChatProvider) buildAuthHeaders(ctx *schemas.BifrostContext, key schemas.Key) (map[string]string, *schemas.BifrostError) {
+	return provider.buildAuthHeadersWithRefresh(ctx, key, false)
+}
+
+func (provider *GigaChatProvider) refreshAuthHeaders(ctx *schemas.BifrostContext, key schemas.Key) (map[string]string, *schemas.BifrostError) {
+	return provider.buildAuthHeadersWithRefresh(ctx, key, true)
+}
+
+func (provider *GigaChatProvider) buildAuthHeadersWithRefresh(ctx *schemas.BifrostContext, key schemas.Key, forceRefresh bool) (map[string]string, *schemas.BifrostError) {
+	if bifrostErr := provider.rejectProviderAuthorizationExtraHeader(); bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	headers := map[string]string{
+		gigaChatUserAgentHeader: gigaChatUserAgent,
+	}
+
+	if _, ok := getGigaChatContextHeader(ctx, gigaChatAuthorizationHeader); !ok {
+		accessToken, bifrostErr := provider.getGigaChatAccessTokenWithRefresh(ctx, key, forceRefresh)
+		if bifrostErr != nil {
+			return nil, bifrostErr
+		}
+		headers[gigaChatAuthorizationHeader] = "Bearer " + accessToken
+	}
+
+	applyGigaChatProviderContextHeaders(headers, provider.networkConfig.ExtraHeaders)
+	applyGigaChatRequestContextHeaders(headers, ctx)
+	return headers, nil
+}
+
+func (provider *GigaChatProvider) rejectProviderAuthorizationExtraHeader() *schemas.BifrostError {
+	if hasGigaChatHeader(provider.networkConfig.ExtraHeaders, gigaChatAuthorizationHeader) {
+		return newGigaChatConfigurationError("network_config.extra_headers cannot include Authorization for GigaChat; configure GigaChat auth material or request extra headers instead")
+	}
+	return nil
+}
+
+func hasGigaChatHeader(headers map[string]string, headerName string) bool {
+	for key := range headers {
+		if strings.EqualFold(strings.TrimSpace(key), headerName) {
+			return true
+		}
+	}
+	return false
+}
+
+func applyGigaChatProviderContextHeaders(headers map[string]string, extraHeaders map[string]string) {
+	for key, value := range extraHeaders {
+		canonicalHeader, ok := getGigaChatContextHeaderName(key)
+		if !ok || canonicalHeader == gigaChatAuthorizationHeader {
+			continue
+		}
+		if strings.TrimSpace(value) != "" {
+			headers[canonicalHeader] = value
+		}
+	}
+}
+
+func applyGigaChatRequestContextHeaders(headers map[string]string, ctx *schemas.BifrostContext) {
+	if ctx == nil {
+		return
+	}
+	extraHeaders, ok := ctx.Value(schemas.BifrostContextKeyExtraHeaders).(map[string][]string)
+	if !ok {
+		return
+	}
+	for key, values := range extraHeaders {
+		canonicalHeader, ok := getGigaChatContextHeaderName(key)
+		if !ok {
+			continue
+		}
+		for _, value := range values {
+			if strings.TrimSpace(value) != "" {
+				headers[canonicalHeader] = value
+				break
+			}
+		}
+	}
+}
+
+func getGigaChatContextHeader(ctx *schemas.BifrostContext, headerName string) (string, bool) {
+	if ctx == nil {
+		return "", false
+	}
+	extraHeaders, ok := ctx.Value(schemas.BifrostContextKeyExtraHeaders).(map[string][]string)
+	if !ok {
+		return "", false
+	}
+	for key, values := range extraHeaders {
+		if !strings.EqualFold(strings.TrimSpace(key), headerName) {
+			continue
+		}
+		for _, value := range values {
+			if strings.TrimSpace(value) != "" {
+				return value, true
+			}
+		}
+	}
+	return "", false
+}
+
+func getGigaChatContextHeaderName(headerName string) (string, bool) {
+	canonicalHeader, ok := gigaChatContextHeaders[strings.ToLower(strings.TrimSpace(headerName))]
+	return canonicalHeader, ok
+}
+
 func (provider *GigaChatProvider) getOAuthAccessToken(ctx *schemas.BifrostContext, key schemas.Key) (string, *schemas.BifrostError) {
+	return provider.getOAuthAccessTokenWithRefresh(ctx, key, false)
+}
+
+func (provider *GigaChatProvider) getOAuthAccessTokenWithRefresh(ctx *schemas.BifrostContext, key schemas.Key, forceRefresh bool) (string, *schemas.BifrostError) {
 	authConfig, bifrostErr := resolveGigaChatOAuthConfig(key)
 	if bifrostErr != nil {
 		return "", bifrostErr
@@ -59,7 +186,7 @@ func (provider *GigaChatProvider) getOAuthAccessToken(ctx *schemas.BifrostContex
 	entry.mu.Lock()
 	defer entry.mu.Unlock()
 
-	if entry.token.isValid(provider.tokenCache.now().Add(gigaChatOAuthRefreshLeeway)) {
+	if !forceRefresh && entry.token.isValid(provider.tokenCache.now().Add(gigaChatOAuthRefreshLeeway)) {
 		return entry.token.accessToken, nil
 	}
 
@@ -72,6 +199,10 @@ func (provider *GigaChatProvider) getOAuthAccessToken(ctx *schemas.BifrostContex
 }
 
 func (provider *GigaChatProvider) getPasswordAccessToken(ctx *schemas.BifrostContext, key schemas.Key) (string, *schemas.BifrostError) {
+	return provider.getPasswordAccessTokenWithRefresh(ctx, key, false)
+}
+
+func (provider *GigaChatProvider) getPasswordAccessTokenWithRefresh(ctx *schemas.BifrostContext, key schemas.Key, forceRefresh bool) (string, *schemas.BifrostError) {
 	authConfig, bifrostErr := provider.resolveGigaChatPasswordAuthConfig(key)
 	if bifrostErr != nil {
 		return "", bifrostErr
@@ -82,7 +213,7 @@ func (provider *GigaChatProvider) getPasswordAccessToken(ctx *schemas.BifrostCon
 	entry.mu.Lock()
 	defer entry.mu.Unlock()
 
-	if entry.token.isValid(provider.tokenCache.now().Add(gigaChatOAuthRefreshLeeway)) {
+	if !forceRefresh && entry.token.isValid(provider.tokenCache.now().Add(gigaChatOAuthRefreshLeeway)) {
 		return entry.token.accessToken, nil
 	}
 
@@ -95,26 +226,45 @@ func (provider *GigaChatProvider) getPasswordAccessToken(ctx *schemas.BifrostCon
 }
 
 func (provider *GigaChatProvider) getGigaChatAccessToken(ctx *schemas.BifrostContext, key schemas.Key) (string, *schemas.BifrostError) {
+	return provider.getGigaChatAccessTokenWithRefresh(ctx, key, false)
+}
+
+func (provider *GigaChatProvider) getGigaChatAccessTokenWithRefresh(ctx *schemas.BifrostContext, key schemas.Key, forceRefresh bool) (string, *schemas.BifrostError) {
 	keyConfig := key.GigaChatKeyConfig
-	if keyConfig == nil {
-		return "", newGigaChatConfigurationError("gigachat_key_config is required for GigaChat authentication")
-	}
-
-	if keyConfig.AccessToken.IsSet() {
-		accessToken := strings.TrimSpace(keyConfig.AccessToken.GetValue())
-		if accessToken == "" {
-			return "", newGigaChatConfigurationError("gigachat_key_config.access_token resolved to an empty value")
+	if !forceRefresh {
+		if accessToken, isSet, bifrostErr := resolveGigaChatExplicitAccessToken(key); isSet || bifrostErr != nil {
+			return accessToken, bifrostErr
 		}
-		return accessToken, nil
 	}
-	if keyConfig.Credentials.IsSet() {
-		return provider.getOAuthAccessToken(ctx, key)
+	if keyConfig != nil && keyConfig.Credentials.IsSet() {
+		return provider.getOAuthAccessTokenWithRefresh(ctx, key, forceRefresh)
 	}
-	if keyConfig.User.IsSet() || keyConfig.Password.IsSet() {
-		return provider.getPasswordAccessToken(ctx, key)
+	if keyConfig != nil && (keyConfig.User.IsSet() || keyConfig.Password.IsSet()) {
+		return provider.getPasswordAccessTokenWithRefresh(ctx, key, forceRefresh)
+	}
+	if accessToken, isSet, bifrostErr := resolveGigaChatExplicitAccessToken(key); isSet || bifrostErr != nil {
+		return accessToken, bifrostErr
 	}
 
-	return "", newGigaChatConfigurationError("gigachat_key_config requires access_token, credentials, or user/password auth material")
+	return "", newGigaChatConfigurationError("GigaChat authentication requires key.value access token or gigachat_key_config access_token, credentials, or user/password auth material")
+}
+
+func resolveGigaChatExplicitAccessToken(key schemas.Key) (string, bool, *schemas.BifrostError) {
+	if key.GigaChatKeyConfig != nil && key.GigaChatKeyConfig.AccessToken.IsSet() {
+		accessToken := strings.TrimSpace(key.GigaChatKeyConfig.AccessToken.GetValue())
+		if accessToken == "" {
+			return "", true, newGigaChatConfigurationError("gigachat_key_config.access_token resolved to an empty value")
+		}
+		return accessToken, true, nil
+	}
+	if key.Value.IsSet() {
+		accessToken := strings.TrimSpace(key.Value.GetValue())
+		if accessToken == "" {
+			return "", true, newGigaChatConfigurationError("GigaChat key value resolved to an empty access token")
+		}
+		return accessToken, true, nil
+	}
+	return "", false, nil
 }
 
 func (cache *gigaChatTokenCache) getEntry(cacheKey string) *gigaChatTokenCacheEntry {
@@ -237,6 +387,7 @@ func (provider *GigaChatProvider) requestGigaChatOAuthToken(ctx *schemas.Bifrost
 	req.Header.SetContentType("application/x-www-form-urlencoded")
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("RqUID", uuid.NewString())
+	req.Header.Set(gigaChatUserAgentHeader, gigaChatUserAgent)
 	req.Header.Set("Authorization", "Basic "+authConfig.credentials)
 	req.SetBodyString(form.Encode())
 
@@ -296,6 +447,7 @@ func (provider *GigaChatProvider) requestGigaChatPasswordToken(ctx *schemas.Bifr
 	req.SetRequestURI(authConfig.tokenURL)
 	req.Header.SetMethod(http.MethodPost)
 	req.Header.Set("Accept", "application/json")
+	req.Header.Set(gigaChatUserAgentHeader, gigaChatUserAgent)
 	req.Header.Set("Authorization", "Basic "+base64.StdEncoding.EncodeToString([]byte(authConfig.user+":"+authConfig.password)))
 
 	client, err := buildGigaChatTLSClient(provider.client, authConfig.keyConfig)

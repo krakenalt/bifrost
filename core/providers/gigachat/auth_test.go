@@ -41,6 +41,234 @@ func TestGigaChatPasswordTokenClient(t *testing.T) {
 	t.Run("AuthPriority", testGigaChatAuthPriority)
 }
 
+func TestGigaChatAuthHeaders(t *testing.T) {
+	t.Parallel()
+
+	t.Run("ExplicitAccessToken", testGigaChatAuthHeadersExplicitAccessToken)
+	t.Run("KeyValueAccessToken", testGigaChatAuthHeadersKeyValueAccessToken)
+	t.Run("OAuthToken", testGigaChatAuthHeadersOAuthToken)
+	t.Run("BlocksProviderAuthorizationExtraHeader", testGigaChatAuthHeadersBlocksProviderAuthorizationExtraHeader)
+	t.Run("ContextAuthorizationOverridesTokenFlow", testGigaChatAuthHeadersContextAuthorizationOverridesTokenFlow)
+	t.Run("PassesContextVars", testGigaChatAuthHeadersPassesContextVars)
+	t.Run("ForcedRefreshBypassesCachedOAuthToken", testGigaChatAuthHeadersForcedRefreshBypassesCachedOAuthToken)
+	t.Run("ForcedRefreshFallsBackFromExplicitTokenToOAuth", testGigaChatAuthHeadersForcedRefreshFallsBackFromExplicitTokenToOAuth)
+}
+
+func testGigaChatAuthHeadersExplicitAccessToken(t *testing.T) {
+	t.Parallel()
+
+	provider := newTestGigaChatProvider(t, time.Now)
+	headers, bifrostErr := provider.buildAuthHeaders(testBifrostContext(), schemas.Key{
+		GigaChatKeyConfig: &schemas.GigaChatKeyConfig{
+			AccessToken: schemas.NewEnvVar("explicit-access-token"),
+		},
+	})
+	if bifrostErr != nil {
+		t.Fatalf("buildAuthHeaders returned error: %v", bifrostErr)
+	}
+	assertGigaChatDefaultHeaders(t, headers, "Bearer explicit-access-token")
+}
+
+func testGigaChatAuthHeadersKeyValueAccessToken(t *testing.T) {
+	t.Parallel()
+
+	provider := newTestGigaChatProvider(t, time.Now)
+	headers, bifrostErr := provider.buildAuthHeaders(testBifrostContext(), schemas.Key{
+		Value: *schemas.NewEnvVar("key-value-access-token"),
+	})
+	if bifrostErr != nil {
+		t.Fatalf("buildAuthHeaders returned error: %v", bifrostErr)
+	}
+	assertGigaChatDefaultHeaders(t, headers, "Bearer key-value-access-token")
+}
+
+func testGigaChatAuthHeadersOAuthToken(t *testing.T) {
+	t.Parallel()
+
+	now := time.Unix(1_700_000_000, 0)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"access_token":"oauth-access-token","expires_at":` + formatUnix(now.Add(30*time.Minute)) + `}`))
+	}))
+	defer server.Close()
+
+	provider := newTestGigaChatProvider(t, func() time.Time { return now })
+	headers, bifrostErr := provider.buildAuthHeaders(testBifrostContext(), testGigaChatOAuthKey(server.URL, "", "test-credentials"))
+	if bifrostErr != nil {
+		t.Fatalf("buildAuthHeaders returned error: %v", bifrostErr)
+	}
+	assertGigaChatDefaultHeaders(t, headers, "Bearer oauth-access-token")
+}
+
+func testGigaChatAuthHeadersBlocksProviderAuthorizationExtraHeader(t *testing.T) {
+	t.Parallel()
+
+	provider := newTestGigaChatProvider(t, time.Now)
+	provider.networkConfig.ExtraHeaders = map[string]string{
+		"authorization": "Bearer provider-authorization-token",
+	}
+
+	_, bifrostErr := provider.buildAuthHeaders(testBifrostContext(), schemas.Key{
+		GigaChatKeyConfig: &schemas.GigaChatKeyConfig{
+			AccessToken: schemas.NewEnvVar("explicit-access-token"),
+		},
+	})
+	if bifrostErr == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(bifrostErr.GetErrorString(), "extra_headers") {
+		t.Fatalf("unexpected error: %v", bifrostErr)
+	}
+	assertNoGigaChatSecretLeak(t, bifrostErr.String())
+}
+
+func testGigaChatAuthHeadersContextAuthorizationOverridesTokenFlow(t *testing.T) {
+	t.Parallel()
+
+	var requestCount atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requestCount.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"access_token":"oauth-access-token","expires_at":1893456000}`))
+	}))
+	defer server.Close()
+
+	ctx := testBifrostContext()
+	ctx.SetValue(schemas.BifrostContextKeyExtraHeaders, map[string][]string{
+		"Authorization": {"Bearer context-authorization-token"},
+	})
+
+	provider := newTestGigaChatProvider(t, time.Now)
+	headers, bifrostErr := provider.buildAuthHeaders(ctx, testGigaChatOAuthKey(server.URL, "", "test-credentials"))
+	if bifrostErr != nil {
+		t.Fatalf("buildAuthHeaders returned error: %v", bifrostErr)
+	}
+	assertGigaChatDefaultHeaders(t, headers, "Bearer context-authorization-token")
+	if requestCount.Load() != 0 {
+		t.Fatalf("request count mismatch: got %d, want 0", requestCount.Load())
+	}
+}
+
+func testGigaChatAuthHeadersPassesContextVars(t *testing.T) {
+	t.Parallel()
+
+	ctx := testBifrostContext()
+	ctx.SetValue(schemas.BifrostContextKeyExtraHeaders, map[string][]string{
+		"X-Session-ID":   {"session-id"},
+		"X-Request-ID":   {"request-id"},
+		"X-Service-ID":   {"service-id"},
+		"X-Operation-ID": {"operation-id"},
+		"X-Client-ID":    {"client-id"},
+		"X-Trace-ID":     {"trace-id"},
+		"X-Agent-ID":     {"agent-id"},
+		"X-Ignored-ID":   {"ignored-id"},
+	})
+
+	provider := newTestGigaChatProvider(t, time.Now)
+	provider.networkConfig.ExtraHeaders = map[string]string{
+		"X-Service-ID": "provider-service-id",
+	}
+
+	headers, bifrostErr := provider.buildAuthHeaders(ctx, schemas.Key{
+		GigaChatKeyConfig: &schemas.GigaChatKeyConfig{
+			AccessToken: schemas.NewEnvVar("explicit-access-token"),
+		},
+	})
+	if bifrostErr != nil {
+		t.Fatalf("buildAuthHeaders returned error: %v", bifrostErr)
+	}
+
+	assertGigaChatDefaultHeaders(t, headers, "Bearer explicit-access-token")
+	expectedHeaders := map[string]string{
+		"X-Session-ID":   "session-id",
+		"X-Request-ID":   "request-id",
+		"X-Service-ID":   "service-id",
+		"X-Operation-ID": "operation-id",
+		"X-Client-ID":    "client-id",
+		"X-Trace-ID":     "trace-id",
+		"X-Agent-ID":     "agent-id",
+	}
+	for key, want := range expectedHeaders {
+		if got := headers[key]; got != want {
+			t.Fatalf("%s mismatch: got %q, want %q", key, got, want)
+		}
+	}
+	if _, ok := headers["X-Ignored-ID"]; ok {
+		t.Fatalf("unexpected ignored header: %v", headers)
+	}
+}
+
+func testGigaChatAuthHeadersForcedRefreshBypassesCachedOAuthToken(t *testing.T) {
+	t.Parallel()
+
+	now := time.Unix(1_700_000_000, 0)
+	var requestCount atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		count := requestCount.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"access_token":"oauth-refresh-token-` + formatInt32(count) + `","expires_at":` + formatUnix(now.Add(30*time.Minute)) + `}`))
+	}))
+	defer server.Close()
+
+	provider := newTestGigaChatProvider(t, func() time.Time { return now })
+	key := testGigaChatOAuthKey(server.URL, "", "test-credentials")
+
+	headers, bifrostErr := provider.buildAuthHeaders(testBifrostContext(), key)
+	if bifrostErr != nil {
+		t.Fatalf("buildAuthHeaders returned error: %v", bifrostErr)
+	}
+	assertGigaChatDefaultHeaders(t, headers, "Bearer oauth-refresh-token-1")
+
+	headers, bifrostErr = provider.refreshAuthHeaders(testBifrostContext(), key)
+	if bifrostErr != nil {
+		t.Fatalf("refreshAuthHeaders returned error: %v", bifrostErr)
+	}
+	assertGigaChatDefaultHeaders(t, headers, "Bearer oauth-refresh-token-2")
+	if requestCount.Load() != 2 {
+		t.Fatalf("request count mismatch: got %d, want 2", requestCount.Load())
+	}
+}
+
+func testGigaChatAuthHeadersForcedRefreshFallsBackFromExplicitTokenToOAuth(t *testing.T) {
+	t.Parallel()
+
+	now := time.Unix(1_700_000_000, 0)
+	var requestCount atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requestCount.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"access_token":"oauth-refreshed-token","expires_at":` + formatUnix(now.Add(30*time.Minute)) + `}`))
+	}))
+	defer server.Close()
+
+	provider := newTestGigaChatProvider(t, func() time.Time { return now })
+	key := schemas.Key{
+		GigaChatKeyConfig: &schemas.GigaChatKeyConfig{
+			AccessToken: schemas.NewEnvVar("explicit-access-token"),
+			Credentials: schemas.NewEnvVar("test-credentials"),
+			AuthURL:     server.URL,
+		},
+	}
+
+	headers, bifrostErr := provider.buildAuthHeaders(testBifrostContext(), key)
+	if bifrostErr != nil {
+		t.Fatalf("buildAuthHeaders returned error: %v", bifrostErr)
+	}
+	assertGigaChatDefaultHeaders(t, headers, "Bearer explicit-access-token")
+	if requestCount.Load() != 0 {
+		t.Fatalf("request count mismatch before refresh: got %d, want 0", requestCount.Load())
+	}
+
+	headers, bifrostErr = provider.refreshAuthHeaders(testBifrostContext(), key)
+	if bifrostErr != nil {
+		t.Fatalf("refreshAuthHeaders returned error: %v", bifrostErr)
+	}
+	assertGigaChatDefaultHeaders(t, headers, "Bearer oauth-refreshed-token")
+	if requestCount.Load() != 1 {
+		t.Fatalf("request count mismatch after refresh: got %d, want 1", requestCount.Load())
+	}
+}
+
 func testGigaChatOAuthRequestShapeAndDefaultScope(t *testing.T) {
 	t.Parallel()
 
@@ -57,6 +285,9 @@ func testGigaChatOAuthRequestShapeAndDefaultScope(t *testing.T) {
 		}
 		if accept := r.Header.Get("Accept"); accept != "application/json" {
 			t.Errorf("accept mismatch: got %q", accept)
+		}
+		if userAgent := r.Header.Get("User-Agent"); userAgent != gigaChatUserAgent {
+			t.Errorf("user-agent mismatch: got %q", userAgent)
 		}
 		if auth := r.Header.Get("Authorization"); auth != "Basic test-credentials" {
 			t.Errorf("authorization mismatch: got %q", auth)
@@ -109,6 +340,9 @@ func testGigaChatPasswordRequestShape(t *testing.T) {
 		}
 		if accept := r.Header.Get("Accept"); accept != "application/json" {
 			t.Errorf("accept mismatch: got %q", accept)
+		}
+		if userAgent := r.Header.Get("User-Agent"); userAgent != gigaChatUserAgent {
+			t.Errorf("user-agent mismatch: got %q", userAgent)
 		}
 		wantAuth := "Basic " + base64.StdEncoding.EncodeToString([]byte("test-user:test-password"))
 		if auth := r.Header.Get("Authorization"); auth != wantAuth {
@@ -603,10 +837,21 @@ func testBifrostContext() *schemas.BifrostContext {
 
 func assertNoGigaChatSecretLeak(t *testing.T, output string) {
 	t.Helper()
-	for _, secret := range []string{"super-secret-credentials", "test-credentials", "super-secret-user", "super-secret-password", "test-user", "test-password"} {
+	for _, secret := range []string{"super-secret-credentials", "test-credentials", "super-secret-user", "super-secret-password", "test-user", "test-password", "explicit-access-token", "key-value-access-token", "provider-authorization-token", "context-authorization-token"} {
 		if strings.Contains(output, secret) {
 			t.Fatalf("secret %q leaked in %s", secret, output)
 		}
+	}
+}
+
+func assertGigaChatDefaultHeaders(t *testing.T, headers map[string]string, wantAuthorization string) {
+	t.Helper()
+
+	if got := headers[gigaChatAuthorizationHeader]; got != wantAuthorization {
+		t.Fatalf("authorization header mismatch: got %q, want %q", got, wantAuthorization)
+	}
+	if got := headers[gigaChatUserAgentHeader]; got != gigaChatUserAgent {
+		t.Fatalf("user-agent header mismatch: got %q, want %q", got, gigaChatUserAgent)
 	}
 }
 
