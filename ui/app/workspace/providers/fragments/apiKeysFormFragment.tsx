@@ -79,6 +79,7 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 	const isVLLM = providerName === "vllm";
 	const isOllama = providerName === "ollama";
 	const isSGL = providerName === "sgl";
+	const isGigaChat = providerName === "gigachat";
 	const isKeylessProvider = isOllama || isSGL;
 	const supportsBatchAPI = BATCH_SUPPORTED_PROVIDERS.includes(providerName);
 
@@ -90,6 +91,8 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 
 	// Auth type state for Vertex: 'service_account', 'service_account_json', or 'api_key'
 	const [vertexAuthType, setVertexAuthType] = useState<"service_account" | "service_account_json" | "api_key">("service_account");
+
+	const [gigaChatAuthType, setGigaChatAuthType] = useState<"credentials" | "access_token" | "password">("credentials");
 
 	// Detect auth type from existing form values when editing
 	useEffect(() => {
@@ -149,6 +152,31 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 			form.setValue("key.bedrock_key_config._auth_type", detected);
 		}
 	}, [isBedrock, form]);
+
+	useEffect(() => {
+		if (form.formState.isDirty) return;
+		if (isGigaChat) {
+			const config = form.getValues("key.gigachat_key_config");
+			const accessToken = config?.access_token;
+			const apiKey = form.getValues("key.value");
+			const user = config?.user;
+			const password = config?.password;
+			let detected: "credentials" | "access_token" | "password" = "credentials";
+			if (accessToken?.value || accessToken?.env_var || apiKey?.value || apiKey?.env_var) {
+				detected = "access_token";
+				if (!accessToken?.value && !accessToken?.env_var && apiKey) {
+					form.setValue("key.gigachat_key_config.access_token", apiKey);
+				}
+			} else if (user?.value || user?.env_var || password?.value || password?.env_var) {
+				detected = "password";
+			}
+			setGigaChatAuthType(detected);
+			form.setValue("key.gigachat_key_config._auth_type", detected);
+			if (!config?.scope) {
+				form.setValue("key.gigachat_key_config.scope", "GIGACHAT_API_PERS");
+			}
+		}
+	}, [isGigaChat, form]);
 
 	return (
 		<div data-tab="api-keys" className="space-y-4 overflow-hidden">
@@ -218,7 +246,7 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 				/>
 			</div>
 			{/* Hide API Key field for providers with dedicated auth tabs */}
-			{!isAzure && !isBedrock && !isVertex && (
+			{!isAzure && !isBedrock && !isVertex && !isGigaChat && (
 				<FormField
 					control={control}
 					name={`key.value`}
@@ -662,6 +690,259 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 							)}
 						/>
 					)}
+				</div>
+			)}
+			{isGigaChat && (
+				<div className="space-y-4">
+					<Separator className="my-6" />
+					<div className="space-y-2">
+						<FormLabel>Authentication Method</FormLabel>
+						<Tabs
+							value={gigaChatAuthType}
+							onValueChange={(v) => {
+								const next = v as "credentials" | "access_token" | "password";
+								setGigaChatAuthType(next);
+								form.setValue("key.gigachat_key_config._auth_type", next, { shouldDirty: true, shouldValidate: true });
+								form.setValue("key.value", undefined, { shouldDirty: true });
+								if (next !== "credentials") {
+									form.setValue("key.gigachat_key_config.credentials", undefined, { shouldDirty: true });
+								}
+								if (next !== "access_token") {
+									form.setValue("key.gigachat_key_config.access_token", undefined, { shouldDirty: true });
+								}
+								if (next !== "password") {
+									form.setValue("key.gigachat_key_config.user", undefined, { shouldDirty: true });
+									form.setValue("key.gigachat_key_config.password", undefined, { shouldDirty: true });
+								}
+							}}
+						>
+							<TabsList className="grid w-full grid-cols-3">
+								<TabsTrigger data-testid="apikey-gigachat-credentials-tab" value="credentials">
+									OAuth
+								</TabsTrigger>
+								<TabsTrigger data-testid="apikey-gigachat-access-token-tab" value="access_token">
+									Token
+								</TabsTrigger>
+								<TabsTrigger data-testid="apikey-gigachat-password-tab" value="password">
+									Password
+								</TabsTrigger>
+							</TabsList>
+						</Tabs>
+					</div>
+
+					{gigaChatAuthType === "credentials" && (
+						<>
+							<FormField
+								control={control}
+								name="key.gigachat_key_config.credentials"
+								render={({ field }) => (
+									<FormItem>
+										<FormLabel>Credentials (Required)</FormLabel>
+										<FormControl>
+											<EnvVarInput
+												data-testid="apikey-gigachat-credentials-input"
+												placeholder="env.GIGACHAT_CREDENTIALS"
+												type="text"
+												redactNonEnvValue
+												{...field}
+											/>
+										</FormControl>
+										<FormMessage />
+									</FormItem>
+								)}
+							/>
+							<FormField
+								control={control}
+								name="key.gigachat_key_config.scope"
+								render={({ field }) => (
+									<FormItem>
+										<FormLabel>Scope</FormLabel>
+										<FormControl>
+											<Input
+												data-testid="apikey-gigachat-scope-input"
+												placeholder="GIGACHAT_API_PERS"
+												{...field}
+												value={field.value ?? ""}
+											/>
+										</FormControl>
+										<FormMessage />
+									</FormItem>
+								)}
+							/>
+						</>
+					)}
+
+					{gigaChatAuthType === "access_token" && (
+						<FormField
+							control={control}
+							name="key.gigachat_key_config.access_token"
+							render={({ field }) => (
+								<FormItem>
+									<FormLabel>Access Token (Required)</FormLabel>
+									<FormControl>
+										<EnvVarInput
+											data-testid="apikey-gigachat-access-token-input"
+											placeholder="env.GIGACHAT_ACCESS_TOKEN"
+											type="text"
+											redactNonEnvValue
+											{...field}
+										/>
+									</FormControl>
+									<FormMessage />
+								</FormItem>
+							)}
+						/>
+					)}
+
+					{gigaChatAuthType === "password" && (
+						<>
+							<FormField
+								control={control}
+								name="key.gigachat_key_config.user"
+								render={({ field }) => (
+									<FormItem>
+										<FormLabel>User (Required)</FormLabel>
+										<FormControl>
+											<EnvVarInput data-testid="apikey-gigachat-user-input" placeholder="env.GIGACHAT_USER" type="text" {...field} />
+										</FormControl>
+										<FormMessage />
+									</FormItem>
+								)}
+							/>
+							<FormField
+								control={control}
+								name="key.gigachat_key_config.password"
+								render={({ field }) => (
+									<FormItem>
+										<FormLabel>Password (Required)</FormLabel>
+										<FormControl>
+											<EnvVarInput
+												data-testid="apikey-gigachat-password-input"
+												placeholder="env.GIGACHAT_PASSWORD"
+												type="password"
+												redactNonEnvValue
+												{...field}
+											/>
+										</FormControl>
+										<FormMessage />
+									</FormItem>
+								)}
+							/>
+						</>
+					)}
+
+					<Separator className="my-6" />
+					<div className="grid gap-4 md:grid-cols-2">
+						<FormField
+							control={control}
+							name="key.gigachat_key_config.base_url"
+							render={({ field }) => (
+								<FormItem>
+									<FormLabel>Base URL (Optional)</FormLabel>
+									<FormControl>
+										<Input
+											data-testid="apikey-gigachat-base-url-input"
+											placeholder="https://gigachat.devices.sberbank.ru/api"
+											{...field}
+											value={field.value ?? ""}
+										/>
+									</FormControl>
+									<FormMessage />
+								</FormItem>
+							)}
+						/>
+						<FormField
+							control={control}
+							name="key.gigachat_key_config.auth_url"
+							render={({ field }) => (
+								<FormItem>
+									<FormLabel>Auth URL (Optional)</FormLabel>
+									<FormControl>
+										<Input
+											data-testid="apikey-gigachat-auth-url-input"
+											placeholder="https://ngw.devices.sberbank.ru:9443/api/v2/oauth"
+											{...field}
+											value={field.value ?? ""}
+										/>
+									</FormControl>
+									<FormMessage />
+								</FormItem>
+							)}
+						/>
+						<FormField
+							control={control}
+							name="key.gigachat_key_config.cert_file"
+							render={({ field }) => (
+								<FormItem>
+									<FormLabel>Cert File (Optional)</FormLabel>
+									<FormControl>
+										<Input
+											data-testid="apikey-gigachat-cert-file-input"
+											placeholder="/path/to/client.crt"
+											{...field}
+											value={field.value ?? ""}
+										/>
+									</FormControl>
+									<FormMessage />
+								</FormItem>
+							)}
+						/>
+						<FormField
+							control={control}
+							name="key.gigachat_key_config.key_file"
+							render={({ field }) => (
+								<FormItem>
+									<FormLabel>Key File (Optional)</FormLabel>
+									<FormControl>
+										<Input
+											data-testid="apikey-gigachat-key-file-input"
+											placeholder="/path/to/client.key"
+											{...field}
+											value={field.value ?? ""}
+										/>
+									</FormControl>
+									<FormMessage />
+								</FormItem>
+							)}
+						/>
+						<FormField
+							control={control}
+							name="key.gigachat_key_config.key_file_password"
+							render={({ field }) => (
+								<FormItem>
+									<FormLabel>Key File Password (Optional)</FormLabel>
+									<FormControl>
+										<EnvVarInput
+											data-testid="apikey-gigachat-key-file-password-input"
+											placeholder="env.GIGACHAT_KEY_FILE_PASSWORD"
+											type="password"
+											redactNonEnvValue
+											{...field}
+										/>
+									</FormControl>
+									<FormMessage />
+								</FormItem>
+							)}
+						/>
+						<FormField
+							control={control}
+							name="key.gigachat_key_config.ca_bundle_file"
+							render={({ field }) => (
+								<FormItem>
+									<FormLabel>CA Bundle File (Optional)</FormLabel>
+									<FormControl>
+										<Input
+											data-testid="apikey-gigachat-ca-bundle-file-input"
+											placeholder="/path/to/ca-bundle.pem"
+											{...field}
+											value={field.value ?? ""}
+										/>
+									</FormControl>
+									<FormMessage />
+								</FormItem>
+							)}
+						/>
+					</div>
 				</div>
 			)}
 			{isReplicate && (
