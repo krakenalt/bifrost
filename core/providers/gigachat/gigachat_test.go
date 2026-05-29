@@ -28,6 +28,7 @@ func TestGigachat(t *testing.T) {
 	t.Run("ResponsesRequestConversion", testGigaChatResponsesRequestConversion)
 	t.Run("Responses", testGigaChatResponses)
 	t.Run("ResponsesStream", testGigaChatResponsesStream)
+	t.Run("Tools", testGigaChatTools)
 	t.Run("BuildsTLSClientWithCABundle", testGigaChatBuildsTLSClientWithCABundle)
 	t.Run("BuildsTLSClientWithCertificate", testGigaChatBuildsTLSClientWithCertificate)
 	t.Run("RejectsMissingCertificatePair", testGigaChatRejectsMissingCertificatePair)

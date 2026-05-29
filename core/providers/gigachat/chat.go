@@ -24,9 +24,10 @@ func ToGigaChatChatRequest(_ *schemas.BifrostContext, bifrostReq *schemas.Bifros
 		return nil, fmt.Errorf("messages are required")
 	}
 
+	toolCallNamesByID := collectGigaChatChatToolCallNames(bifrostReq.Input)
 	messages := make([]GigaChatChatMessage, 0, len(bifrostReq.Input))
 	for index, message := range bifrostReq.Input {
-		convertedMessage, err := toGigaChatChatMessage(message)
+		convertedMessage, err := toGigaChatChatMessage(message, toolCallNamesByID)
 		if err != nil {
 			return nil, fmt.Errorf("messages[%d]: %w", index, err)
 		}
@@ -52,6 +53,16 @@ func ToGigaChatChatRequest(_ *schemas.BifrostContext, bifrostReq *schemas.Bifros
 	gigaChatReq.N = bifrostReq.Params.N
 	gigaChatReq.Stop = bifrostReq.Params.Stop
 	gigaChatReq.ExtraParams = bifrostReq.Params.ExtraParams
+	functions, functionNames, err := toGigaChatChatFunctions(bifrostReq.Params.Tools)
+	if err != nil {
+		return nil, err
+	}
+	gigaChatReq.Functions = functions
+	functionCall, err := toGigaChatChatFunctionCall(bifrostReq.Params.ToolChoice, functionNames)
+	if err != nil {
+		return nil, err
+	}
+	gigaChatReq.FunctionCall = functionCall
 
 	return gigaChatReq, nil
 }
@@ -161,11 +172,11 @@ func withGigaChatChatResponseProvider(providerName schemas.ModelProvider) func(*
 	}
 }
 
-func toGigaChatChatMessage(message schemas.ChatMessage) (GigaChatChatMessage, error) {
+func toGigaChatChatMessage(message schemas.ChatMessage, toolCallNamesByID map[string]string) (GigaChatChatMessage, error) {
 	switch message.Role {
 	case schemas.ChatMessageRoleSystem, schemas.ChatMessageRoleUser, schemas.ChatMessageRoleAssistant:
 	case schemas.ChatMessageRoleTool:
-		return GigaChatChatMessage{}, fmt.Errorf("tool messages require GigaChat function-call mapping, which is not enabled for v1 chat completions yet")
+		return toGigaChatFunctionResultMessage(message, toolCallNamesByID)
 	case schemas.ChatMessageRoleDeveloper:
 		return GigaChatChatMessage{}, fmt.Errorf("developer messages are not supported by GigaChat v1 chat completions")
 	default:
@@ -176,7 +187,7 @@ func toGigaChatChatMessage(message schemas.ChatMessage) (GigaChatChatMessage, er
 	}
 	if message.ChatAssistantMessage != nil {
 		if len(message.ChatAssistantMessage.ToolCalls) > 0 {
-			return GigaChatChatMessage{}, fmt.Errorf("assistant tool calls are not supported by GigaChat v1 chat completions yet")
+			return toGigaChatAssistantFunctionCallMessage(message)
 		}
 		if message.ChatAssistantMessage.Refusal != nil ||
 			message.ChatAssistantMessage.Audio != nil ||
@@ -196,6 +207,94 @@ func toGigaChatChatMessage(message schemas.ChatMessage) (GigaChatChatMessage, er
 		Role:    string(message.Role),
 		Content: content,
 		Name:    message.Name,
+	}, nil
+}
+
+func collectGigaChatChatToolCallNames(messages []schemas.ChatMessage) map[string]string {
+	toolCallNamesByID := make(map[string]string)
+	for _, message := range messages {
+		if message.ChatAssistantMessage == nil {
+			continue
+		}
+		for _, toolCall := range message.ChatAssistantMessage.ToolCalls {
+			if toolCall.ID == nil || strings.TrimSpace(*toolCall.ID) == "" || toolCall.Function.Name == nil || strings.TrimSpace(*toolCall.Function.Name) == "" {
+				continue
+			}
+			toolCallNamesByID[strings.TrimSpace(*toolCall.ID)] = strings.TrimSpace(*toolCall.Function.Name)
+		}
+	}
+	return toolCallNamesByID
+}
+
+func toGigaChatAssistantFunctionCallMessage(message schemas.ChatMessage) (GigaChatChatMessage, error) {
+	if message.ChatAssistantMessage == nil || len(message.ChatAssistantMessage.ToolCalls) == 0 {
+		return GigaChatChatMessage{}, fmt.Errorf("assistant function_call is required")
+	}
+	if len(message.ChatAssistantMessage.ToolCalls) > 1 {
+		return GigaChatChatMessage{}, fmt.Errorf("GigaChat v1 chat completions support one function call per assistant message")
+	}
+	toolCall := message.ChatAssistantMessage.ToolCalls[0]
+	if toolCall.Type != nil && *toolCall.Type != "" && *toolCall.Type != string(schemas.ChatToolTypeFunction) {
+		return GigaChatChatMessage{}, fmt.Errorf("assistant tool call type %q is not supported by GigaChat v1 chat completions", *toolCall.Type)
+	}
+	if toolCall.Function.Name == nil || strings.TrimSpace(*toolCall.Function.Name) == "" {
+		return GigaChatChatMessage{}, fmt.Errorf("assistant function_call name is required")
+	}
+	arguments, err := parseGigaChatChatFunctionArguments(toolCall.Function.Arguments)
+	if err != nil {
+		return GigaChatChatMessage{}, err
+	}
+
+	content, err := toGigaChatChatMessageContent(message.Content)
+	if err != nil {
+		return GigaChatChatMessage{}, err
+	}
+	if content == nil {
+		content = &schemas.ChatMessageContent{ContentStr: schemas.Ptr("")}
+	}
+
+	return GigaChatChatMessage{
+		Role:    string(schemas.ChatMessageRoleAssistant),
+		Content: content,
+		Name:    message.Name,
+		FunctionCall: &GigaChatFunctionCall{
+			Name:      strings.TrimSpace(*toolCall.Function.Name),
+			Arguments: arguments,
+		},
+		FunctionsStateID: toolCall.ID,
+	}, nil
+}
+
+func toGigaChatFunctionResultMessage(message schemas.ChatMessage, toolCallNamesByID map[string]string) (GigaChatChatMessage, error) {
+	if message.ChatToolMessage == nil {
+		return GigaChatChatMessage{}, fmt.Errorf("function result message requires tool message fields")
+	}
+	name := ""
+	if message.Name != nil {
+		name = strings.TrimSpace(*message.Name)
+	}
+	if name == "" && message.ChatToolMessage.ToolCallID != nil {
+		name = toolCallNamesByID[strings.TrimSpace(*message.ChatToolMessage.ToolCallID)]
+	}
+	if name == "" {
+		return GigaChatChatMessage{}, fmt.Errorf("function result message requires function name or matching tool_call_id")
+	}
+	content, err := toGigaChatChatMessageContent(message.Content)
+	if err != nil {
+		return GigaChatChatMessage{}, err
+	}
+	if content == nil || content.ContentStr == nil || strings.TrimSpace(*content.ContentStr) == "" {
+		return GigaChatChatMessage{}, fmt.Errorf("function result message content is required")
+	}
+	trimmedContent := bytes.TrimSpace([]byte(*content.ContentStr))
+	if !json.Valid(trimmedContent) || len(trimmedContent) == 0 || trimmedContent[0] != '{' {
+		return GigaChatChatMessage{}, fmt.Errorf("function result message content must be a JSON object string")
+	}
+
+	return GigaChatChatMessage{
+		Role:    "function",
+		Content: content,
+		Name:    &name,
 	}, nil
 }
 
@@ -254,8 +353,6 @@ func unsupportedGigaChatChatParams(params *schemas.ChatParameters) []string {
 	addIf(params.StreamOptions != nil, "stream_options")
 	addIf(params.Store != nil && *params.Store, "store")
 	addIf(params.TopLogProbs != nil, "top_logprobs")
-	addIf(params.ToolChoice != nil, "tool_choice")
-	addIf(len(params.Tools) > 0, "tools")
 	addIf(params.User != nil, "user")
 	addIf(params.Verbosity != nil, "verbosity")
 	addIf(params.WebSearchOptions != nil, "web_search_options")
@@ -267,9 +364,25 @@ func unsupportedGigaChatChatParams(params *schemas.ChatParameters) []string {
 	addIf(params.CacheControl != nil, "cache_control")
 	addIf(params.TaskBudget != nil, "task_budget")
 	addIf(len(bytes.TrimSpace(params.ContextManagement)) > 0, "context_management")
+	unsupported = append(unsupported, unsupportedGigaChatToolControlExtraParams(params.ExtraParams, "functions", "function_call", "tools", "tool_config", "parallel_tool_calls")...)
 
 	sort.Strings(unsupported)
 	return unsupported
+}
+
+func parseGigaChatChatFunctionArguments(arguments string) (json.RawMessage, error) {
+	trimmed := bytes.TrimSpace([]byte(arguments))
+	if len(trimmed) == 0 {
+		return json.RawMessage(`{}`), nil
+	}
+	if !json.Valid(trimmed) || trimmed[0] != '{' {
+		return nil, fmt.Errorf("function_call arguments must be a JSON object")
+	}
+	var compacted bytes.Buffer
+	if err := json.Compact(&compacted, trimmed); err != nil {
+		return nil, fmt.Errorf("function_call arguments must be valid JSON: %w", err)
+	}
+	return json.RawMessage(compacted.Bytes()), nil
 }
 
 func toBifrostGigaChatMessage(message *GigaChatChatMessage) *schemas.ChatMessage {

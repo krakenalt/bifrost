@@ -25,15 +25,17 @@ type GigaChatPasswordTokenResponse struct {
 
 // GigaChatChatRequest is the v1 chat completions request body.
 type GigaChatChatRequest struct {
-	Model       string                 `json:"model"`
-	Messages    []GigaChatChatMessage  `json:"messages"`
-	Temperature *float64               `json:"temperature,omitempty"`
-	TopP        *float64               `json:"top_p,omitempty"`
-	MaxTokens   *int                   `json:"max_tokens,omitempty"`
-	N           *int                   `json:"n,omitempty"`
-	Stop        []string               `json:"stop,omitempty"`
-	Stream      *bool                  `json:"stream,omitempty"`
-	ExtraParams map[string]interface{} `json:"-"`
+	Model        string                 `json:"model"`
+	Messages     []GigaChatChatMessage  `json:"messages"`
+	Temperature  *float64               `json:"temperature,omitempty"`
+	TopP         *float64               `json:"top_p,omitempty"`
+	MaxTokens    *int                   `json:"max_tokens,omitempty"`
+	N            *int                   `json:"n,omitempty"`
+	Stop         []string               `json:"stop,omitempty"`
+	Stream       *bool                  `json:"stream,omitempty"`
+	FunctionCall interface{}            `json:"function_call,omitempty"`
+	Functions    []GigaChatFunction     `json:"functions,omitempty"`
+	ExtraParams  map[string]interface{} `json:"-"`
 }
 
 // GetExtraParams returns provider-specific passthrough fields.
@@ -57,6 +59,20 @@ type GigaChatChatMessage struct {
 type GigaChatFunctionCall struct {
 	Name      string          `json:"name,omitempty"`
 	Arguments json.RawMessage `json:"arguments,omitempty"`
+}
+
+// GigaChatFunctionCallChoice forces a specific GigaChat function call.
+type GigaChatFunctionCallChoice struct {
+	Name string `json:"name"`
+}
+
+// GigaChatFunction describes a client-defined function for GigaChat function calling.
+type GigaChatFunction struct {
+	Name             string                          `json:"name"`
+	Description      *string                         `json:"description,omitempty"`
+	Parameters       *schemas.ToolFunctionParameters `json:"parameters,omitempty"`
+	FewShotExamples  []map[string]interface{}        `json:"few_shot_examples,omitempty"`
+	ReturnParameters map[string]interface{}          `json:"return_parameters,omitempty"`
 }
 
 // GigaChatChatResponse is the v1 chat completions response body.

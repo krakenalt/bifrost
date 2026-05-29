@@ -564,7 +564,7 @@ func applyGigaChatResponsesParams(gigaChatReq *GigaChatResponsesRequest, params 
 	}
 	gigaChatReq.Tools = tools
 
-	toolConfig, err := toGigaChatResponsesToolConfig(params.ToolChoice)
+	toolConfig, err := toGigaChatResponsesToolConfig(params.ToolChoice, params.Tools)
 	if err != nil {
 		return err
 	}
@@ -945,6 +945,7 @@ func unsupportedGigaChatResponsesParams(params *schemas.ResponsesParameters) []s
 	if params.Text != nil {
 		addIf(params.Text.Verbosity != nil, "text.verbosity")
 	}
+	unsupported = append(unsupported, unsupportedGigaChatToolControlExtraParams(params.ExtraParams, "functions", "function_call", "tools", "tool_config", "parallel_tool_calls")...)
 
 	sort.Strings(unsupported)
 	return unsupported

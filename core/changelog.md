@@ -1,3 +1,4 @@
+- feat: harden GigaChat tools compatibility
 - fix: align GigaChat Responses conversion with v2 chat completions contract
 - feat: implement GigaChat Responses streaming
 - feat: implement GigaChat Responses via v2 chat
