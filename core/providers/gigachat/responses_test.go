@@ -163,6 +163,7 @@ func testGigaChatResponsesFunctionToolAndToolHistory(t *testing.T) {
 	t.Parallel()
 
 	toolName := "get_weather"
+	callID := "tools-state-weather"
 	arguments := `{"city":"Moscow"}`
 	toolOutput := `{"temperature":5}`
 	request := &schemas.BifrostResponsesRequest{
@@ -176,13 +177,15 @@ func testGigaChatResponsesFunctionToolAndToolHistory(t *testing.T) {
 				Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall),
 				ResponsesToolMessage: &schemas.ResponsesToolMessage{
 					Name:      &toolName,
+					CallID:    &callID,
 					Arguments: &arguments,
 				},
 			},
 			{
 				Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCallOutput),
 				ResponsesToolMessage: &schemas.ResponsesToolMessage{
-					Name: &toolName,
+					Name:   &toolName,
+					CallID: &callID,
 					Output: &schemas.ResponsesToolMessageOutputStruct{
 						ResponsesToolCallOutputStr: &toolOutput,
 					},
@@ -224,9 +227,15 @@ func testGigaChatResponsesFunctionToolAndToolHistory(t *testing.T) {
 	if gigaChatReq.Messages[1].FunctionCall == nil {
 		t.Fatalf("expected function call message, got %#v", gigaChatReq.Messages[1])
 	}
+	if gigaChatReq.Messages[1].ToolsStateID == nil || *gigaChatReq.Messages[1].ToolsStateID != callID {
+		t.Fatalf("function call tools_state_id mismatch: %#v", gigaChatReq.Messages[1].ToolsStateID)
+	}
 	argumentsMap, ok := gigaChatReq.Messages[1].FunctionCall.Arguments.(map[string]interface{})
 	if !ok || argumentsMap["city"] != "Moscow" {
 		t.Fatalf("function arguments mismatch: %#v", gigaChatReq.Messages[1].FunctionCall.Arguments)
+	}
+	if gigaChatReq.Messages[2].ToolsStateID == nil || *gigaChatReq.Messages[2].ToolsStateID != callID {
+		t.Fatalf("function result tools_state_id mismatch: %#v", gigaChatReq.Messages[2].ToolsStateID)
 	}
 	if gigaChatReq.Messages[2].Content[0].FunctionResult == nil || gigaChatReq.Messages[2].Content[0].FunctionResult.Result != toolOutput {
 		t.Fatalf("function result mismatch: %#v", gigaChatReq.Messages[2].Content)
@@ -419,8 +428,9 @@ func testGigaChatResponsesConverterMapsToolCall(t *testing.T) {
 	response := &GigaChatResponsesResponse{
 		Model: "GigaChat-2-Max",
 		Messages: []GigaChatResponsesMessage{{
-			Role:      "assistant",
-			MessageID: schemas.Ptr("call-message"),
+			Role:         "assistant",
+			MessageID:    schemas.Ptr("call-message"),
+			ToolsStateID: schemas.Ptr("tools-state-call"),
 			Content: []GigaChatResponsesContentPart{{
 				FunctionCall: &GigaChatResponsesFunctionCall{
 					Name: "get_weather",
@@ -456,7 +466,7 @@ func testGigaChatResponsesConverterMapsToolCall(t *testing.T) {
 	if output.ResponsesToolMessage.Arguments == nil || *output.ResponsesToolMessage.Arguments != `{"city":"Moscow"}` {
 		t.Fatalf("arguments mismatch: %#v", output.ResponsesToolMessage.Arguments)
 	}
-	if output.ResponsesToolMessage.CallID == nil || *output.ResponsesToolMessage.CallID != "call-message" {
+	if output.ResponsesToolMessage.CallID == nil || *output.ResponsesToolMessage.CallID != "tools-state-call" {
 		t.Fatalf("call id mismatch: %#v", output.ResponsesToolMessage.CallID)
 	}
 }
