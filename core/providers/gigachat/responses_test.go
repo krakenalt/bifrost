@@ -348,25 +348,24 @@ func testGigaChatResponsesConverterMapsTextAndUsage(t *testing.T) {
 	t.Parallel()
 
 	response := &GigaChatResponsesResponse{
-		ID:      "resp-test",
-		Created: 1700000000,
-		Model:   "GigaChat-2",
-		Choices: []GigaChatResponsesChoice{{
-			Index: 0,
-			Message: &GigaChatResponsesMessage{
-				Role:      "assistant",
-				MessageID: schemas.Ptr("msg-test"),
-				Content: []GigaChatResponsesContentPart{{
-					Text: schemas.Ptr("Здравствуйте"),
-				}},
-			},
+		MessageID: schemas.Ptr("resp-test"),
+		CreatedAt: 1700000000,
+		Model:     "GigaChat-2",
+		Messages: []GigaChatResponsesMessage{{
+			Role:      "assistant",
+			MessageID: schemas.Ptr("msg-test"),
+			Content: []GigaChatResponsesContentPart{{
+				Text: schemas.Ptr("Здравствуйте"),
+			}},
 			FinishReason: schemas.Ptr("stop"),
 		}},
 		Usage: &GigaChatChatUsage{
-			PromptTokens:          7,
-			CompletionTokens:      3,
-			TotalTokens:           10,
-			PrecachedPromptTokens: 2,
+			InputTokens:  7,
+			OutputTokens: 3,
+			TotalTokens:  10,
+			InputTokensDetails: &GigaChatTokenDetails{
+				CachedTokens: 2,
+			},
 		},
 	}
 
@@ -419,20 +418,17 @@ func testGigaChatResponsesConverterMapsToolCall(t *testing.T) {
 
 	response := &GigaChatResponsesResponse{
 		Model: "GigaChat-2-Max",
-		Choices: []GigaChatResponsesChoice{{
-			Index: 0,
-			Message: &GigaChatResponsesMessage{
-				Role:      "assistant",
-				MessageID: schemas.Ptr("call-message"),
-				Content: []GigaChatResponsesContentPart{{
-					FunctionCall: &GigaChatResponsesFunctionCall{
-						Name: "get_weather",
-						Arguments: map[string]interface{}{
-							"city": "Moscow",
-						},
+		Messages: []GigaChatResponsesMessage{{
+			Role:      "assistant",
+			MessageID: schemas.Ptr("call-message"),
+			Content: []GigaChatResponsesContentPart{{
+				FunctionCall: &GigaChatResponsesFunctionCall{
+					Name: "get_weather",
+					Arguments: map[string]interface{}{
+						"city": "Moscow",
 					},
-				}},
-			},
+				},
+			}},
 			FinishReason: schemas.Ptr("function_call"),
 		}},
 	}
@@ -491,12 +487,11 @@ func testGigaChatResponsesExecutesWithOAuthToken(t *testing.T) {
 			w.Header().Set("Content-Type", "application/json")
 			w.Header().Set("X-Request-ID", "responses-request-id")
 			_, _ = w.Write([]byte(`{
-				"id":"resp-test",
-				"choices":[{"index":0,"message":{"role":"assistant","message_id":"msg-test","content":[{"text":"Здравствуйте"}]},"finish_reason":"stop"}],
-				"created":1700000000,
+				"message_id":"resp-test",
+				"messages":[{"role":"assistant","message_id":"msg-test","content":[{"text":"Здравствуйте"}],"finish_reason":"stop"}],
+				"created_at":1700000000,
 				"model":"GigaChat-2",
-				"object":"chat.completion",
-				"usage":{"prompt_tokens":7,"completion_tokens":3,"total_tokens":10,"precached_prompt_tokens":2}
+				"usage":{"input_tokens":7,"input_tokens_details":{"cached_tokens":2},"output_tokens":3,"total_tokens":10}
 			}`))
 		default:
 			t.Fatalf("unexpected path: %s", request.URL.Path)
@@ -593,7 +588,7 @@ func testGigaChatResponsesRefreshesTokenAfterUnauthorized(t *testing.T) {
 				_, _ = w.Write([]byte(`{"status":401,"message":"expired token"}`))
 				return
 			}
-			_, _ = w.Write([]byte(`{"choices":[{"index":0,"message":{"role":"assistant","content":[{"text":"ok"}]},"finish_reason":"stop"}],"model":"GigaChat-2","object":"chat.completion"}`))
+			_, _ = w.Write([]byte(`{"messages":[{"role":"assistant","content":[{"text":"ok"}],"finish_reason":"stop"}],"model":"GigaChat-2"}`))
 		default:
 			t.Fatalf("unexpected path: %s", request.URL.Path)
 		}
@@ -641,9 +636,9 @@ func testGigaChatResponsesStreamTextDeltasAndUsage(t *testing.T) {
 			assertGigaChatResponsesStreamRequestBody(t, request)
 			w.Header().Set("Content-Type", "text/event-stream")
 			w.Header().Set("X-Request-ID", "responses-stream-request-id")
-			_, _ = w.Write([]byte("data: {\"id\":\"resp-stream\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"При\"}}],\"created\":1700000000,\"model\":\"GigaChat-2\",\"object\":\"chat.completion\"}\n\n"))
-			_, _ = w.Write([]byte("data: {\"id\":\"resp-stream\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"вет\"}}],\"created\":1700000000,\"model\":\"GigaChat-2\",\"object\":\"chat.completion\"}\n\n"))
-			_, _ = w.Write([]byte("data: {\"id\":\"resp-stream\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}],\"created\":1700000000,\"model\":\"GigaChat-2\",\"object\":\"chat.completion\",\"usage\":{\"prompt_tokens\":7,\"completion_tokens\":3,\"total_tokens\":10,\"precached_prompt_tokens\":2}}\n\n"))
+			_, _ = w.Write([]byte("data: {\"event\":\"message\",\"message_id\":\"resp-stream\",\"messages\":[{\"role\":\"assistant\",\"content\":[{\"text\":\"При\"}]}],\"created_at\":1700000000,\"model\":\"GigaChat-2\"}\n\n"))
+			_, _ = w.Write([]byte("data: {\"event\":\"message\",\"message_id\":\"resp-stream\",\"messages\":[{\"content\":[{\"text\":\"вет\"}]}],\"created_at\":1700000000,\"model\":\"GigaChat-2\"}\n\n"))
+			_, _ = w.Write([]byte("data: {\"event\":\"done\",\"message_id\":\"resp-stream\",\"messages\":[{\"finish_reason\":\"stop\"}],\"created_at\":1700000000,\"model\":\"GigaChat-2\",\"usage\":{\"input_tokens\":7,\"input_tokens_details\":{\"cached_tokens\":2},\"output_tokens\":3,\"total_tokens\":10}}\n\n"))
 			_, _ = w.Write([]byte("data: [DONE]\n\n"))
 		default:
 			t.Fatalf("unexpected path: %s", request.URL.Path)
@@ -715,8 +710,8 @@ func testGigaChatResponsesStreamToolCallDeltas(t *testing.T) {
 		}
 		assertGigaChatResponsesStreamRequestBody(t, request)
 		w.Header().Set("Content-Type", "text/event-stream")
-		_, _ = w.Write([]byte("data: {\"id\":\"resp-tools\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"function_call\":{\"name\":\"get_weather\",\"arguments\":{\"city\":\"Moscow\"}},\"functions_state_id\":\"call-weather\"}}],\"created\":1700000000,\"model\":\"GigaChat-2\",\"object\":\"chat.completion\"}\n\n"))
-		_, _ = w.Write([]byte("data: {\"id\":\"resp-tools\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"function_call\"}],\"created\":1700000000,\"model\":\"GigaChat-2\",\"object\":\"chat.completion\",\"usage\":{\"prompt_tokens\":11,\"completion_tokens\":4,\"total_tokens\":15}}\n\n"))
+		_, _ = w.Write([]byte("data: {\"event\":\"message\",\"message_id\":\"resp-tools\",\"messages\":[{\"role\":\"assistant\",\"tools_state_id\":\"call-weather\",\"content\":[{\"function_call\":{\"name\":\"get_weather\",\"arguments\":{\"city\":\"Moscow\"}}}]}],\"created_at\":1700000000,\"model\":\"GigaChat-2\"}\n\n"))
+		_, _ = w.Write([]byte("data: {\"event\":\"done\",\"message_id\":\"resp-tools\",\"messages\":[{\"finish_reason\":\"function_call\"}],\"created_at\":1700000000,\"model\":\"GigaChat-2\",\"usage\":{\"input_tokens\":11,\"output_tokens\":4,\"total_tokens\":15}}\n\n"))
 		_, _ = w.Write([]byte("data: [DONE]\n\n"))
 	}))
 	defer server.Close()
@@ -796,7 +791,7 @@ func testGigaChatResponsesStreamHandlesContextCancellation(t *testing.T) {
 			t.Fatalf("unexpected path: %s", request.URL.Path)
 		}
 		w.Header().Set("Content-Type", "text/event-stream")
-		_, _ = w.Write([]byte("data: {\"id\":\"resp-cancel\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"partial\"}}],\"created\":1700000000,\"model\":\"GigaChat-2\",\"object\":\"chat.completion\"}\n\n"))
+		_, _ = w.Write([]byte("data: {\"event\":\"message\",\"message_id\":\"resp-cancel\",\"messages\":[{\"role\":\"assistant\",\"content\":[{\"text\":\"partial\"}]}],\"created_at\":1700000000,\"model\":\"GigaChat-2\"}\n\n"))
 		if flusher, ok := w.(http.Flusher); ok {
 			flusher.Flush()
 		}

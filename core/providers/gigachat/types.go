@@ -109,10 +109,19 @@ type GigaChatChatStreamDelta struct {
 
 // GigaChatChatUsage is token usage returned by GigaChat chat completions.
 type GigaChatChatUsage struct {
-	PromptTokens          int `json:"prompt_tokens,omitempty"`
-	CompletionTokens      int `json:"completion_tokens,omitempty"`
-	TotalTokens           int `json:"total_tokens,omitempty"`
-	PrecachedPromptTokens int `json:"precached_prompt_tokens,omitempty"`
+	PromptTokens          int                   `json:"prompt_tokens,omitempty"`
+	CompletionTokens      int                   `json:"completion_tokens,omitempty"`
+	TotalTokens           int                   `json:"total_tokens,omitempty"`
+	PrecachedPromptTokens int                   `json:"precached_prompt_tokens,omitempty"`
+	InputTokens           int                   `json:"input_tokens,omitempty"`
+	OutputTokens          int                   `json:"output_tokens,omitempty"`
+	InputTokensDetails    *GigaChatTokenDetails `json:"input_tokens_details,omitempty"`
+}
+
+// GigaChatTokenDetails is the token breakdown shape used by GigaChat v2.
+type GigaChatTokenDetails struct {
+	CachedTokens     int `json:"cached_tokens,omitempty"`
+	CachedReadTokens int `json:"cached_read_tokens,omitempty"`
 }
 
 // # MODELS TYPES
@@ -230,7 +239,7 @@ type GigaChatResponsesResponseFormat struct {
 
 // GigaChatResponsesMessage is a v2 chat message.
 type GigaChatResponsesMessage struct {
-	Role         string                         `json:"role"`
+	Role         string                         `json:"role,omitempty"`
 	MessageID    *string                        `json:"message_id,omitempty"`
 	Content      []GigaChatResponsesContentPart `json:"content,omitempty"`
 	ToolsStateID *string                        `json:"tools_state_id,omitempty"`
@@ -295,23 +304,30 @@ type GigaChatResponsesFunctionSpecification struct {
 
 // GigaChatResponsesResponse is the v2 chat completions response body used for Bifrost Responses.
 type GigaChatResponsesResponse struct {
-	ID                string                    `json:"id,omitempty"`
-	Object            string                    `json:"object,omitempty"`
-	Created           int                       `json:"created,omitempty"`
-	Model             string                    `json:"model,omitempty"`
-	Choices           []GigaChatResponsesChoice `json:"choices,omitempty"`
-	Usage             *GigaChatChatUsage        `json:"usage,omitempty"`
-	ThreadID          *string                   `json:"thread_id,omitempty"`
-	MessageID         *string                   `json:"message_id,omitempty"`
-	ToolsStateID      *string                   `json:"tools_state_id,omitempty"`
-	SystemFingerprint string                    `json:"system_fingerprint,omitempty"`
-	ExtraParams       map[string]interface{}    `json:"-"`
+	ID                string                     `json:"id,omitempty"`
+	Event             *string                    `json:"event,omitempty"`
+	Object            string                     `json:"object,omitempty"`
+	Created           int                        `json:"created,omitempty"`
+	CreatedAt         int                        `json:"created_at,omitempty"`
+	Model             string                     `json:"model,omitempty"`
+	Messages          []GigaChatResponsesMessage `json:"messages,omitempty"`
+	Choices           []GigaChatResponsesChoice  `json:"choices,omitempty"`
+	FinishReason      *string                    `json:"finish_reason,omitempty"`
+	Usage             *GigaChatChatUsage         `json:"usage,omitempty"`
+	ThreadID          *string                    `json:"thread_id,omitempty"`
+	MessageID         *string                    `json:"message_id,omitempty"`
+	ToolsStateID      *string                    `json:"tools_state_id,omitempty"`
+	ToolExecution     interface{}                `json:"tool_execution,omitempty"`
+	AdditionalData    interface{}                `json:"additional_data,omitempty"`
+	SystemFingerprint string                     `json:"system_fingerprint,omitempty"`
+	ExtraParams       map[string]interface{}     `json:"-"`
 }
 
 // GigaChatResponsesChoice is a single v2 completion choice.
 type GigaChatResponsesChoice struct {
 	Index        int                       `json:"index"`
 	Message      *GigaChatResponsesMessage `json:"message,omitempty"`
+	Delta        *GigaChatChatStreamDelta  `json:"delta,omitempty"`
 	FinishReason *string                   `json:"finish_reason,omitempty"`
 	LogProbs     *schemas.BifrostLogProbs  `json:"logprobs,omitempty"`
 }

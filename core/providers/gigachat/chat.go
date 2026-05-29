@@ -357,14 +357,34 @@ func toBifrostGigaChatUsage(usage *GigaChatChatUsage) *schemas.BifrostLLMUsage {
 	if usage == nil {
 		return nil
 	}
-	bifrostUsage := &schemas.BifrostLLMUsage{
-		PromptTokens:     usage.PromptTokens,
-		CompletionTokens: usage.CompletionTokens,
-		TotalTokens:      usage.TotalTokens,
+	promptTokens := usage.PromptTokens
+	if promptTokens == 0 && usage.InputTokens > 0 {
+		promptTokens = usage.InputTokens
 	}
-	if usage.PrecachedPromptTokens > 0 {
+	completionTokens := usage.CompletionTokens
+	if completionTokens == 0 && usage.OutputTokens > 0 {
+		completionTokens = usage.OutputTokens
+	}
+	totalTokens := usage.TotalTokens
+	if totalTokens == 0 && promptTokens+completionTokens > 0 {
+		totalTokens = promptTokens + completionTokens
+	}
+
+	bifrostUsage := &schemas.BifrostLLMUsage{
+		PromptTokens:     promptTokens,
+		CompletionTokens: completionTokens,
+		TotalTokens:      totalTokens,
+	}
+	cachedTokens := usage.PrecachedPromptTokens
+	if cachedTokens == 0 && usage.InputTokensDetails != nil {
+		cachedTokens = usage.InputTokensDetails.CachedTokens
+		if cachedTokens == 0 {
+			cachedTokens = usage.InputTokensDetails.CachedReadTokens
+		}
+	}
+	if cachedTokens > 0 {
 		bifrostUsage.PromptTokensDetails = &schemas.ChatPromptTokensDetails{
-			CachedReadTokens: usage.PrecachedPromptTokens,
+			CachedReadTokens: cachedTokens,
 		}
 	}
 	return bifrostUsage

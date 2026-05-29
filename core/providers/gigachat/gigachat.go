@@ -648,7 +648,7 @@ func (provider *GigaChatProvider) responsesStreamWithRefresh(
 				return
 			}
 
-			var gigaChatResponse GigaChatChatStreamResponse
+			var gigaChatResponse GigaChatResponsesResponse
 			_, rawResponse, handlerErr := providerUtils.HandleProviderResponse(data, &gigaChatResponse, nil, false, sendBackRawResponse)
 			if handlerErr != nil {
 				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
