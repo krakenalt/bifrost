@@ -1,10 +1,15 @@
 package gigachat
 
 import (
+	"crypto/tls"
+	"crypto/x509"
+	"fmt"
+	"os"
 	"strings"
 
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	schemas "github.com/maximhq/bifrost/core/schemas"
+	"github.com/valyala/fasthttp"
 )
 
 const (
@@ -97,4 +102,63 @@ func normalizeGigaChatPath(path string, apiVersion string) string {
 	}
 
 	return normalizedPath
+}
+
+func buildGigaChatTLSClient(baseClient *fasthttp.Client, keyConfig *schemas.GigaChatKeyConfig) (*fasthttp.Client, error) {
+	if keyConfig == nil || !gigaChatKeyConfigHasTLSMaterial(keyConfig) {
+		return baseClient, nil
+	}
+
+	client := *baseClient
+	tlsConfig := client.TLSConfig
+	if tlsConfig == nil {
+		tlsConfig = &tls.Config{MinVersion: tls.VersionTLS12}
+	} else {
+		tlsConfig = tlsConfig.Clone()
+	}
+
+	if caBundleFile := strings.TrimSpace(keyConfig.CABundleFile); caBundleFile != "" {
+		caBundlePEM, err := os.ReadFile(caBundleFile)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read gigachat_key_config.ca_bundle_file: %w", err)
+		}
+		if tlsConfig.RootCAs == nil {
+			rootCAs, err := x509.SystemCertPool()
+			if err != nil || rootCAs == nil {
+				rootCAs = x509.NewCertPool()
+			}
+			tlsConfig.RootCAs = rootCAs
+		} else {
+			tlsConfig.RootCAs = tlsConfig.RootCAs.Clone()
+		}
+		if !tlsConfig.RootCAs.AppendCertsFromPEM(caBundlePEM) {
+			return nil, fmt.Errorf("failed to parse gigachat_key_config.ca_bundle_file")
+		}
+	}
+
+	hasCertFile := strings.TrimSpace(keyConfig.CertFile) != ""
+	hasKeyFile := strings.TrimSpace(keyConfig.KeyFile) != ""
+	if hasCertFile != hasKeyFile {
+		return nil, fmt.Errorf("gigachat_key_config.cert_file and gigachat_key_config.key_file must be set together")
+	}
+	if keyConfig.KeyFilePassword.IsSet() {
+		return nil, fmt.Errorf("encrypted gigachat_key_config.key_file is not supported")
+	}
+	if hasCertFile {
+		certificate, err := tls.LoadX509KeyPair(keyConfig.CertFile, keyConfig.KeyFile)
+		if err != nil {
+			return nil, fmt.Errorf("failed to load gigachat_key_config.cert_file/key_file: %w", err)
+		}
+		tlsConfig.Certificates = append(tlsConfig.Certificates, certificate)
+	}
+
+	client.TLSConfig = tlsConfig
+	return &client, nil
+}
+
+func gigaChatKeyConfigHasTLSMaterial(keyConfig *schemas.GigaChatKeyConfig) bool {
+	return strings.TrimSpace(keyConfig.CABundleFile) != "" ||
+		strings.TrimSpace(keyConfig.CertFile) != "" ||
+		strings.TrimSpace(keyConfig.KeyFile) != "" ||
+		keyConfig.KeyFilePassword.IsSet()
 }

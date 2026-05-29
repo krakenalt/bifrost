@@ -137,12 +137,14 @@ type gigaChatOAuthConfig struct {
 	authURL     string
 	credentials string
 	scope       string
+	keyConfig   *schemas.GigaChatKeyConfig
 }
 
 type gigaChatPasswordAuthConfig struct {
-	tokenURL string
-	user     string
-	password string
+	tokenURL  string
+	user      string
+	password  string
+	keyConfig *schemas.GigaChatKeyConfig
 }
 
 func resolveGigaChatOAuthConfig(key schemas.Key) (gigaChatOAuthConfig, *schemas.BifrostError) {
@@ -165,6 +167,7 @@ func resolveGigaChatOAuthConfig(key schemas.Key) (gigaChatOAuthConfig, *schemas.
 		authURL:     resolveAuthURL(key),
 		credentials: credentials,
 		scope:       scope,
+		keyConfig:   keyConfig,
 	}, nil
 }
 
@@ -197,9 +200,10 @@ func (provider *GigaChatProvider) resolveGigaChatPasswordAuthConfig(key schemas.
 
 	baseURL := resolveBaseURL(key, provider.networkConfig)
 	return gigaChatPasswordAuthConfig{
-		tokenURL: buildGigaChatURL(baseURL, gigaChatAPIVersionV1, "/token"),
-		user:     user,
-		password: password,
+		tokenURL:  buildGigaChatURL(baseURL, gigaChatAPIVersionV1, "/token"),
+		user:      user,
+		password:  password,
+		keyConfig: keyConfig,
 	}, nil
 }
 
@@ -236,7 +240,12 @@ func (provider *GigaChatProvider) requestGigaChatOAuthToken(ctx *schemas.Bifrost
 	req.Header.Set("Authorization", "Basic "+authConfig.credentials)
 	req.SetBodyString(form.Encode())
 
-	_, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	client, err := buildGigaChatTLSClient(provider.client, authConfig.keyConfig)
+	if err != nil {
+		return gigaChatCachedToken{}, newGigaChatConfigurationError(err.Error())
+	}
+
+	_, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, client, req, resp)
 	defer wait()
 	if bifrostErr != nil {
 		bifrostErr.ExtraFields.Provider = provider.GetProviderKey()
@@ -289,7 +298,12 @@ func (provider *GigaChatProvider) requestGigaChatPasswordToken(ctx *schemas.Bifr
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("Authorization", "Basic "+base64.StdEncoding.EncodeToString([]byte(authConfig.user+":"+authConfig.password)))
 
-	_, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	client, err := buildGigaChatTLSClient(provider.client, authConfig.keyConfig)
+	if err != nil {
+		return gigaChatCachedToken{}, newGigaChatConfigurationError(err.Error())
+	}
+
+	_, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, client, req, resp)
 	defer wait()
 	if bifrostErr != nil {
 		bifrostErr.ExtraFields.Provider = provider.GetProviderKey()
