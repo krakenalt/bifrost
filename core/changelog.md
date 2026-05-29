@@ -1,3 +1,4 @@
+- fix: allow GigaChat password tokens with immediate expiry
 - fix: harden GigaChat raw error payload redaction
 - feat: normalize GigaChat errors and raw payload redaction
 - feat: harden GigaChat tools compatibility

@@ -35,6 +35,7 @@ func TestGigaChatPasswordTokenClient(t *testing.T) {
 
 	t.Run("RequestShape", testGigaChatPasswordRequestShape)
 	t.Run("CachesTokenBeforeLeeway", testGigaChatPasswordCachesTokenBeforeLeeway)
+	t.Run("AcceptsImmediateExpiryWithoutCaching", testGigaChatPasswordAcceptsImmediateExpiryWithoutCaching)
 	t.Run("HandlesProviderErrors", testGigaChatPasswordHandlesProviderErrors)
 	t.Run("HandlesMalformedResponses", testGigaChatPasswordHandlesMalformedResponses)
 	t.Run("MissingUserPassword", testGigaChatPasswordMissingUserPassword)
@@ -404,6 +405,38 @@ func testGigaChatPasswordCachesTokenBeforeLeeway(t *testing.T) {
 	}
 }
 
+func testGigaChatPasswordAcceptsImmediateExpiryWithoutCaching(t *testing.T) {
+	t.Parallel()
+
+	now := time.Unix(1_700_000_000, 0)
+	var requestCount atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		count := requestCount.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"tok":"password-token-` + formatInt32(count) + `","exp":` + formatUnixMilli(now) + `}`))
+	}))
+	defer server.Close()
+
+	provider := newTestGigaChatProvider(t, func() time.Time { return now })
+	key := testGigaChatPasswordKey(server.URL, "test-user", "test-password")
+
+	firstToken, bifrostErr := provider.getPasswordAccessToken(testBifrostContext(), key)
+	if bifrostErr != nil {
+		t.Fatalf("first getPasswordAccessToken returned error: %v", bifrostErr)
+	}
+	secondToken, bifrostErr := provider.getPasswordAccessToken(testBifrostContext(), key)
+	if bifrostErr != nil {
+		t.Fatalf("second getPasswordAccessToken returned error: %v", bifrostErr)
+	}
+
+	if firstToken != "password-token-1" || secondToken != "password-token-2" {
+		t.Fatalf("token refresh mismatch: first=%q second=%q", firstToken, secondToken)
+	}
+	if requestCount.Load() != 2 {
+		t.Fatalf("request count mismatch: got %d, want 2", requestCount.Load())
+	}
+}
+
 func testGigaChatPasswordHandlesProviderErrors(t *testing.T) {
 	t.Parallel()
 
@@ -435,7 +468,6 @@ func testGigaChatPasswordHandlesMalformedResponses(t *testing.T) {
 		{name: "invalid json", body: `not-json`},
 		{name: "missing token", body: `{"exp":1893456000000}`},
 		{name: "missing expiry", body: `{"tok":"password-token-1"}`},
-		{name: "expired token", body: `{"tok":"password-token-1","exp":1000}`},
 	}
 
 	for _, testCase := range testCases {

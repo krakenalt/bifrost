@@ -483,9 +483,6 @@ func (provider *GigaChatProvider) requestGigaChatPasswordToken(ctx *schemas.Bifr
 	}
 
 	expiresAt := time.UnixMilli(tokenResponse.ExpiresAt)
-	if !expiresAt.After(provider.tokenCache.now()) {
-		return gigaChatCachedToken{}, newGigaChatProviderResponseError("GigaChat password token response is already expired", nil)
-	}
 
 	return gigaChatCachedToken{
 		accessToken: tokenResponse.Token,
