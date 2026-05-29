@@ -1,3 +1,4 @@
+- feat: add GigaChat endpoint resolution helpers
 - feat: add GigaChat auth key configuration schema
 - feat: add GigaChat provider skeleton
 - feat: migrate Azure provider to the v1 API and remove `api_version` from `AzureKeyConfig` (#3661, #3756)
