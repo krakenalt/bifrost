@@ -14,7 +14,7 @@ import { useEffect, useState } from "react";
 import { Control, UseFormReturn } from "react-hook-form";
 
 // Providers that support batch APIs
-const BATCH_SUPPORTED_PROVIDERS = ["openai", "bedrock", "anthropic", "gemini", "azure"];
+const BATCH_SUPPORTED_PROVIDERS = ["openai", "bedrock", "anthropic", "gemini", "azure", "gigachat"];
 
 /** Normalize form value (object or legacy JSON string) for the alias map editor. */
 function normalizeAliasesValue(v: Record<string, string> | string | undefined | null): Record<string, string> {
