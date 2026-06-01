@@ -1,3 +1,4 @@
+- fix: sanitize GigaChat function JSON schemas before request conversion
 - feat: map GigaChat Responses tool choice config
 - feat: map GigaChat Responses built-in tools
 - feat: add GigaChat Responses built-in tool DTOs

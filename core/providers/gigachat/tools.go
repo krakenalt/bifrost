@@ -60,16 +60,6 @@ func validateGigaChatFunctionName(name string) error {
 	return nil
 }
 
-func validateGigaChatFunctionParameters(parameters *schemas.ToolFunctionParameters) error {
-	if parameters == nil {
-		return fmt.Errorf("function parameters JSON schema is required")
-	}
-	if _, err := schemas.MarshalSorted(parameters); err != nil {
-		return fmt.Errorf("function parameters JSON schema is invalid: %w", err)
-	}
-	return nil
-}
-
 func validateGigaChatFunctionStrict(strict *bool) error {
 	if strict != nil && *strict {
 		return fmt.Errorf("function strict mode is not supported by GigaChat")
@@ -95,7 +85,8 @@ func toGigaChatChatFunctions(tools []schemas.ChatTool) ([]GigaChatFunction, map[
 		if err := validateGigaChatFunctionName(name); err != nil {
 			return nil, nil, fmt.Errorf("tools[%d]: %w", index, err)
 		}
-		if err := validateGigaChatFunctionParameters(tool.Function.Parameters); err != nil {
+		parameters, err := sanitizeGigaChatFunctionSchema(tool.Function.Parameters)
+		if err != nil {
 			return nil, nil, fmt.Errorf("tools[%d]: %w", index, err)
 		}
 		if err := validateGigaChatFunctionStrict(tool.Function.Strict); err != nil {
@@ -109,7 +100,7 @@ func toGigaChatChatFunctions(tools []schemas.ChatTool) ([]GigaChatFunction, map[
 		functions = append(functions, GigaChatFunction{
 			Name:        name,
 			Description: tool.Function.Description,
-			Parameters:  tool.Function.Parameters,
+			Parameters:  parameters,
 		})
 	}
 
@@ -252,7 +243,8 @@ func toGigaChatResponsesFunctionSpecification(index int, tool schemas.ResponsesT
 	if tool.ResponsesToolFunction == nil {
 		return nil, fmt.Errorf("tools[%d]: function tool definition is required", index)
 	}
-	if err := validateGigaChatFunctionParameters(tool.ResponsesToolFunction.Parameters); err != nil {
+	parameters, err := sanitizeGigaChatFunctionSchema(tool.ResponsesToolFunction.Parameters)
+	if err != nil {
 		return nil, fmt.Errorf("tools[%d]: %w", index, err)
 	}
 	if err := validateGigaChatFunctionStrict(tool.ResponsesToolFunction.Strict); err != nil {
@@ -268,7 +260,7 @@ func toGigaChatResponsesFunctionSpecification(index int, tool schemas.ResponsesT
 	return &GigaChatResponsesFunctionSpecification{
 		Name:        gigaChatName,
 		Description: tool.Description,
-		Parameters:  tool.ResponsesToolFunction.Parameters,
+		Parameters:  parameters,
 	}, nil
 }
 

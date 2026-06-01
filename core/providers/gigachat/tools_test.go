@@ -1,6 +1,7 @@
 package gigachat
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -20,6 +21,7 @@ func testGigaChatTools(t *testing.T) {
 	t.Run("ResponsesMapsBuiltInTools", testGigaChatToolsResponsesMapsBuiltInTools)
 	t.Run("ResponsesToolChoiceVariants", testGigaChatToolsResponsesToolChoiceVariants)
 	t.Run("ResponsesRemapsReservedFunctionNames", testGigaChatToolsResponsesRemapsReservedFunctionNames)
+	t.Run("SanitizesFunctionSchemas", testGigaChatToolsSanitizesFunctionSchemas)
 	t.Run("ResponsesRejectsUnsupportedPolicy", testGigaChatToolsResponsesRejectsUnsupportedPolicy)
 }
 
@@ -584,6 +586,134 @@ func testGigaChatToolsResponsesRemapsReservedFunctionNames(t *testing.T) {
 	}
 }
 
+func testGigaChatToolsSanitizesFunctionSchemas(t *testing.T) {
+	t.Parallel()
+
+	rawSchema := `{
+		"type": "object",
+		"$defs": {
+			"Location": {
+				"type": "object",
+				"properties": {
+					"city": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+					"coords": {"type": ["object", "null"]}
+				}
+			}
+		},
+		"properties": {
+			"nickname": {"type": ["string", "null"], "nullable": true},
+			"location": {"$ref": "#/$defs/Location"},
+			"preferences": {"anyOf": [{"type": "object", "properties": {"units": {"type": ["string", "null"]}}}, {"type": "null"}]},
+			"attachments": {"type": "array", "items": {"anyOf": [{"type": "object"}, {"type": "null"}]}}
+		},
+		"required": ["location"]
+	}`
+	parameters := mustGigaChatToolParameters(t, rawSchema)
+	before, err := schemas.MarshalSorted(parameters)
+	if err != nil {
+		t.Fatalf("failed to marshal original parameters: %v", err)
+	}
+
+	chatRequest := testGigaChatChatToolRequest(t, "get_weather")
+	chatRequest.Params.Tools[0].Function.Parameters = parameters
+	gigaChatReq, err := ToGigaChatChatRequest(testBifrostContext(), chatRequest)
+	if err != nil {
+		t.Fatalf("ToGigaChatChatRequest returned error: %v", err)
+	}
+	after, err := schemas.MarshalSorted(parameters)
+	if err != nil {
+		t.Fatalf("failed to marshal original parameters after conversion: %v", err)
+	}
+	if string(before) != string(after) {
+		t.Fatalf("sanitizer mutated input schema:\nbefore=%s\nafter=%s", before, after)
+	}
+
+	sanitized := mustGigaChatParametersMap(t, gigaChatReq.Functions[0].Parameters)
+	if _, exists := sanitized["$defs"]; exists {
+		t.Fatalf("sanitized schema still has $defs: %#v", sanitized)
+	}
+	properties := sanitized["properties"].(map[string]interface{})
+	nickname := properties["nickname"].(map[string]interface{})
+	if nickname["type"] != "string" {
+		t.Fatalf("nullable string was not sanitized: %#v", nickname)
+	}
+	if _, exists := nickname["nullable"]; exists {
+		t.Fatalf("nullable flag was not removed: %#v", nickname)
+	}
+	location := properties["location"].(map[string]interface{})
+	locationProperties := location["properties"].(map[string]interface{})
+	city := locationProperties["city"].(map[string]interface{})
+	if city["type"] != "string" {
+		t.Fatalf("$ref optional string was not sanitized: %#v", city)
+	}
+	coords := locationProperties["coords"].(map[string]interface{})
+	if coords["type"] != "object" || len(coords["properties"].(map[string]interface{})) != 0 {
+		t.Fatalf("nullable object without properties was not sanitized: %#v", coords)
+	}
+	preferences := properties["preferences"].(map[string]interface{})
+	units := preferences["properties"].(map[string]interface{})["units"].(map[string]interface{})
+	if preferences["type"] != "object" || units["type"] != "string" {
+		t.Fatalf("nested optional object was not sanitized: %#v", preferences)
+	}
+	attachments := properties["attachments"].(map[string]interface{})
+	items := attachments["items"].(map[string]interface{})
+	if items["type"] != "object" || len(items["properties"].(map[string]interface{})) != 0 {
+		t.Fatalf("array optional object item was not sanitized: %#v", items)
+	}
+	required := sanitized["required"].([]interface{})
+	if len(required) != 1 || required[0] != "location" {
+		t.Fatalf("required fields changed unexpectedly: %#v", required)
+	}
+
+	responsesRequest := testGigaChatResponsesToolRequest(t, "web_search")
+	responsesRequest.Params.Tools[0].ResponsesToolFunction.Parameters = parameters
+	gigaChatResponsesReq, err := ToGigaChatResponsesRequest(responsesRequest)
+	if err != nil {
+		t.Fatalf("ToGigaChatResponsesRequest returned error: %v", err)
+	}
+	specification := gigaChatResponsesReq.Tools[0].Functions.Specifications[0]
+	if specification.Name != "__bifrost_gigachat_user_web_search" {
+		t.Fatalf("reserved function name was not remapped: %q", specification.Name)
+	}
+	responsesSanitized := mustGigaChatParametersMap(t, specification.Parameters)
+	if _, exists := responsesSanitized["$defs"]; exists {
+		t.Fatalf("responses sanitized schema still has $defs: %#v", responsesSanitized)
+	}
+}
+
+func TestGigaChatFunctionSchemaSanitizerRejectsAmbiguousUnions(t *testing.T) {
+	t.Parallel()
+
+	parameters := mustGigaChatToolParameters(t, `{
+		"type": "object",
+		"properties": {
+			"value": {"anyOf": [{"type": "string"}, {"type": "number"}, {"type": "null"}]}
+		}
+	}`)
+	_, err := sanitizeGigaChatFunctionSchema(parameters)
+	if err == nil || !strings.Contains(err.Error(), "multiple non-null branches") {
+		t.Fatalf("expected ambiguous union error, got %v", err)
+	}
+}
+
+func TestGigaChatFunctionSchemaSanitizerHandlesTopLevelNullableObject(t *testing.T) {
+	t.Parallel()
+
+	sanitized, err := sanitizeGigaChatFunctionSchema(map[string]interface{}{
+		"type": []interface{}{"object", "null"},
+	})
+	if err != nil {
+		t.Fatalf("sanitizeGigaChatFunctionSchema returned error: %v", err)
+	}
+	got := mustGigaChatParametersMap(t, sanitized)
+	if got["type"] != "object" {
+		t.Fatalf("top-level nullable object was not sanitized: %#v", got)
+	}
+	if len(got["properties"].(map[string]interface{})) != 0 {
+		t.Fatalf("top-level object properties mismatch: %#v", got["properties"])
+	}
+}
+
 func testGigaChatToolsResponsesRejectsUnsupportedPolicy(t *testing.T) {
 	t.Parallel()
 
@@ -776,4 +906,18 @@ func invalidGigaChatToolParameters() *schemas.ToolFunctionParameters {
 		Type:                 "object",
 		AdditionalProperties: &schemas.AdditionalPropertiesStruct{},
 	}
+}
+
+func mustGigaChatParametersMap(t *testing.T, parameters *schemas.ToolFunctionParameters) map[string]interface{} {
+	t.Helper()
+
+	raw, err := schemas.MarshalSorted(parameters)
+	if err != nil {
+		t.Fatalf("failed to marshal parameters: %v", err)
+	}
+	var out map[string]interface{}
+	if err := json.Unmarshal(raw, &out); err != nil {
+		t.Fatalf("failed to unmarshal parameters: %v", err)
+	}
+	return out
 }
