@@ -884,19 +884,89 @@ func (provider *GigaChatProvider) VideoRemix(_ *schemas.BifrostContext, _ schema
 	return nil, provider.unsupported(schemas.VideoRemixRequest)
 }
 
-// BatchCreate is not supported by the GigaChat provider skeleton.
-func (provider *GigaChatProvider) BatchCreate(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostBatchCreateRequest) (*schemas.BifrostBatchCreateResponse, *schemas.BifrostError) {
-	return nil, provider.unsupported(schemas.BatchCreateRequest)
+// BatchCreate creates a GigaChat batch job.
+func (provider *GigaChatProvider) BatchCreate(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostBatchCreateRequest) (*schemas.BifrostBatchCreateResponse, *schemas.BifrostError) {
+	if err := providerUtils.CheckOperationAllowed(schemas.GigaChat, provider.customProviderConfig, schemas.BatchCreateRequest); err != nil {
+		return nil, err
+	}
+
+	response, bifrostErr := provider.batchCreateWithRefresh(ctx, key, request, false)
+	if isGigaChatUnauthorizedError(bifrostErr) {
+		return provider.batchCreateWithRefresh(ctx, key, request, true)
+	}
+	return response, bifrostErr
 }
 
-// BatchList is not supported by the GigaChat provider skeleton.
-func (provider *GigaChatProvider) BatchList(_ *schemas.BifrostContext, _ []schemas.Key, _ *schemas.BifrostBatchListRequest) (*schemas.BifrostBatchListResponse, *schemas.BifrostError) {
-	return nil, provider.unsupported(schemas.BatchListRequest)
+// BatchList lists GigaChat batch jobs.
+func (provider *GigaChatProvider) BatchList(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostBatchListRequest) (*schemas.BifrostBatchListResponse, *schemas.BifrostError) {
+	if err := providerUtils.CheckOperationAllowed(schemas.GigaChat, provider.customProviderConfig, schemas.BatchListRequest); err != nil {
+		return nil, err
+	}
+	if request == nil {
+		request = &schemas.BifrostBatchListRequest{Provider: provider.GetProviderKey()}
+	}
+	if bifrostErr := validateGigaChatBatchListRequest(request); bifrostErr != nil {
+		return nil, bifrostErr
+	}
+	if len(keys) == 0 {
+		keys = []schemas.Key{{}}
+	}
+
+	helper, err := providerUtils.NewSerialListHelper(keys, request.After, provider.logger, false)
+	if err != nil {
+		return nil, providerUtils.NewBifrostOperationError("invalid pagination cursor", err)
+	}
+	key, _, ok := helper.GetCurrentKey()
+	if !ok {
+		return &schemas.BifrostBatchListResponse{
+			Object: "list",
+			Data:   []schemas.BifrostBatchRetrieveResponse{},
+		}, nil
+	}
+
+	response, bifrostErr := provider.batchListWithRefresh(ctx, key, request, false)
+	if isGigaChatUnauthorizedError(bifrostErr) {
+		response, bifrostErr = provider.batchListWithRefresh(ctx, key, request, true)
+	}
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	nextCursor, hasMore := helper.BuildNextCursor(false, "")
+	response.HasMore = hasMore
+	if nextCursor != "" {
+		response.NextCursor = &nextCursor
+	}
+	return response, nil
 }
 
-// BatchRetrieve is not supported by the GigaChat provider skeleton.
-func (provider *GigaChatProvider) BatchRetrieve(_ *schemas.BifrostContext, _ []schemas.Key, _ *schemas.BifrostBatchRetrieveRequest) (*schemas.BifrostBatchRetrieveResponse, *schemas.BifrostError) {
-	return nil, provider.unsupported(schemas.BatchRetrieveRequest)
+// BatchRetrieve retrieves a GigaChat batch job.
+func (provider *GigaChatProvider) BatchRetrieve(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostBatchRetrieveRequest) (*schemas.BifrostBatchRetrieveResponse, *schemas.BifrostError) {
+	if err := providerUtils.CheckOperationAllowed(schemas.GigaChat, provider.customProviderConfig, schemas.BatchRetrieveRequest); err != nil {
+		return nil, err
+	}
+	if request == nil {
+		return nil, providerUtils.NewBifrostOperationError("batch retrieve request is nil", nil)
+	}
+	if strings.TrimSpace(request.BatchID) == "" {
+		return nil, providerUtils.NewBifrostOperationError("batch_id is required", nil)
+	}
+	if len(keys) == 0 {
+		keys = []schemas.Key{{}}
+	}
+
+	var lastErr *schemas.BifrostError
+	for _, key := range keys {
+		response, bifrostErr := provider.batchRetrieveWithRefresh(ctx, key, request, false)
+		if isGigaChatUnauthorizedError(bifrostErr) {
+			response, bifrostErr = provider.batchRetrieveWithRefresh(ctx, key, request, true)
+		}
+		if bifrostErr == nil {
+			return response, nil
+		}
+		lastErr = bifrostErr
+	}
+	return nil, lastErr
 }
 
 // BatchCancel is not supported by the GigaChat provider skeleton.

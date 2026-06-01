@@ -1,3 +1,4 @@
+- feat: implement GigaChat Batches API
 - feat: add GigaChat batch conversion helpers
 - feat: implement GigaChat Files API
 - test: add optional GigaChat integration coverage

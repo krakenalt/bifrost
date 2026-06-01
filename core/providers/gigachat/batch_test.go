@@ -1,7 +1,11 @@
 package gigachat
 
 import (
+	"bytes"
 	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -129,6 +133,16 @@ func TestConvertGigaChatBatchInputJSONL(t *testing.T) {
 	t.Run("Embeddings", testConvertGigaChatBatchInputJSONLEmbeddings)
 	t.Run("InlineRequestItems", testConvertGigaChatBatchRequestItemsToJSONL)
 	t.Run("UnsupportedEndpoint", testConvertGigaChatBatchInputJSONLUnsupportedEndpoint)
+}
+
+func TestGigaChatBatchesHTTP(t *testing.T) {
+	t.Parallel()
+
+	t.Run("CreateTransformsFileRows", testGigaChatBatchCreateTransformsFileRows)
+	t.Run("ListParsesWrapper", testGigaChatBatchListParsesWrapper)
+	t.Run("RetrieveParsesSingleObject", testGigaChatBatchRetrieveParsesSingleObject)
+	t.Run("UnsupportedEndpoint", testGigaChatBatchCreateUnsupportedEndpoint)
+	t.Run("UnsupportedCompletionWindow", testGigaChatBatchCreateUnsupportedCompletionWindow)
 }
 
 func testConvertGigaChatBatchInputJSONLChatCompletions(t *testing.T) {
@@ -263,6 +277,223 @@ func testConvertGigaChatBatchInputJSONLUnsupportedEndpoint(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "line 1") || !strings.Contains(err.Error(), "do not support endpoint") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func testGigaChatBatchCreateTransformsFileRows(t *testing.T) {
+	t.Parallel()
+
+	inputJSONL := []byte(`{"custom_id":"chat-1","method":"POST","url":"/v1/chat/completions","body":{"model":"GigaChat","messages":[{"role":"user","content":"Hello"}]}}` + "\n")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		if got := request.Header.Get("Authorization"); got != "Bearer batch-token" {
+			t.Fatalf("authorization header mismatch: got %q", got)
+		}
+
+		switch request.URL.Path {
+		case "/v1/files/input-file/content":
+			if request.Method != http.MethodGet {
+				t.Fatalf("file content method mismatch: got %s", request.Method)
+			}
+			w.Header().Set("Content-Type", "application/octet-stream")
+			_, _ = w.Write(inputJSONL)
+		case "/v1/batches":
+			if request.Method != http.MethodPost {
+				t.Fatalf("batch create method mismatch: got %s", request.Method)
+			}
+			if got := request.URL.Query().Get("method"); got != string(GigaChatBatchMethodChatCompletions) {
+				t.Fatalf("method query mismatch: got %q", got)
+			}
+			if got := request.Header.Get("Content-Type"); got != "application/octet-stream" {
+				t.Fatalf("content type mismatch: got %q", got)
+			}
+			body, err := io.ReadAll(request.Body)
+			if err != nil {
+				t.Fatalf("ReadAll returned error: %v", err)
+			}
+			if !bytes.HasSuffix(body, []byte("\n")) {
+				t.Fatalf("batch body must be JSONL with trailing newline, got %q", string(body))
+			}
+			row := decodeGigaChatBatchTestRow(t, body)
+			if row.ID != "chat-1" {
+				t.Fatalf("row id mismatch: got %q", row.ID)
+			}
+			var chatRequest GigaChatChatRequest
+			if err := json.Unmarshal(row.Request, &chatRequest); err != nil {
+				t.Fatalf("unmarshal GigaChat batch request: %v", err)
+			}
+			if chatRequest.Model != "GigaChat" || len(chatRequest.Messages) != 1 {
+				t.Fatalf("unexpected chat request: %#v", chatRequest)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("X-Request-ID", "batch-create-request-id")
+			_, _ = w.Write([]byte(`{"id":"batch-1","object":"batch","method":"chat_completions","status":"created","input_file_id":"input-file","completion_window":"24h","created_at":1780306293,"request_counts":{"total":1}}`))
+		default:
+			t.Fatalf("unexpected path: %s", request.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	provider := newTestGigaChatChatProvider(t, server.URL)
+	response, bifrostErr := provider.BatchCreate(testBifrostContext(), testGigaChatAccessTokenKey("batch-token"), &schemas.BifrostBatchCreateRequest{
+		Provider:         schemas.GigaChat,
+		InputFileID:      "input-file",
+		Endpoint:         schemas.BatchEndpointChatCompletions,
+		CompletionWindow: "24h",
+	})
+	if bifrostErr != nil {
+		t.Fatalf("BatchCreate returned error: %v", bifrostErr)
+	}
+	if response.ID != "batch-1" || response.Status != schemas.BatchStatusValidating {
+		t.Fatalf("unexpected create response: %#v", response)
+	}
+	if response.Endpoint != string(schemas.BatchEndpointChatCompletions) || response.InputFileID != "input-file" || response.CompletionWindow != "24h" {
+		t.Fatalf("unexpected create response metadata: %#v", response)
+	}
+	if response.RequestCounts.Total != 1 {
+		t.Fatalf("request counts mismatch: %#v", response.RequestCounts)
+	}
+	if response.ExtraFields.Provider != schemas.GigaChat {
+		t.Fatalf("provider mismatch: got %q", response.ExtraFields.Provider)
+	}
+	if response.ExtraFields.ProviderResponseHeaders["X-Request-Id"] != "batch-create-request-id" {
+		t.Fatalf("provider headers mismatch: %#v", response.ExtraFields.ProviderResponseHeaders)
+	}
+}
+
+func testGigaChatBatchListParsesWrapper(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/v1/batches" {
+			t.Fatalf("path mismatch: got %s", request.URL.Path)
+		}
+		if request.Method != http.MethodGet {
+			t.Fatalf("method mismatch: got %s", request.Method)
+		}
+		if request.URL.RawQuery != "" {
+			t.Fatalf("unexpected query: %s", request.URL.RawQuery)
+		}
+		if got := request.Header.Get("Authorization"); got != "Bearer batch-list-token" {
+			t.Fatalf("authorization header mismatch: got %q", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"id":"batch-1","object":"batch","method":"chat_completions","status":"in_progress","created_at":1780306293,"request_counts":{"total":2,"completed":1}},{"id":"batch-2","object":"batch","method":"embedder","status":"completed","created_at":1780306294,"request_counts":{"total":1,"completed":1}}]}`))
+	}))
+	defer server.Close()
+
+	provider := newTestGigaChatChatProvider(t, server.URL)
+	response, bifrostErr := provider.BatchList(testBifrostContext(), []schemas.Key{testGigaChatAccessTokenKey("batch-list-token")}, &schemas.BifrostBatchListRequest{Provider: schemas.GigaChat})
+	if bifrostErr != nil {
+		t.Fatalf("BatchList returned error: %v", bifrostErr)
+	}
+	if response.Object != "list" || len(response.Data) != 2 {
+		t.Fatalf("unexpected list response: %#v", response)
+	}
+	if response.Data[0].Status != schemas.BatchStatusInProgress || response.Data[0].Endpoint != string(schemas.BatchEndpointChatCompletions) {
+		t.Fatalf("first batch mismatch: %#v", response.Data[0])
+	}
+	if response.Data[1].Status != schemas.BatchStatusCompleted || response.Data[1].Endpoint != string(schemas.BatchEndpointEmbeddings) {
+		t.Fatalf("second batch mismatch: %#v", response.Data[1])
+	}
+	if response.FirstID == nil || *response.FirstID != "batch-1" || response.LastID == nil || *response.LastID != "batch-2" {
+		t.Fatalf("list ids mismatch: first=%v last=%v", response.FirstID, response.LastID)
+	}
+}
+
+func testGigaChatBatchRetrieveParsesSingleObject(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/v1/batches" {
+			t.Fatalf("path mismatch: got %s", request.URL.Path)
+		}
+		if request.Method != http.MethodGet {
+			t.Fatalf("method mismatch: got %s", request.Method)
+		}
+		if got := request.URL.Query().Get("batch_id"); got != "batch-1" {
+			t.Fatalf("batch_id query mismatch: got %q", got)
+		}
+		if got := request.Header.Get("Authorization"); got != "Bearer batch-retrieve-token" {
+			t.Fatalf("authorization header mismatch: got %q", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"batch-1","object":"batch","method":"embedder","status":"completed","created_at":1780306293,"completed_at":1780306393,"output_file_id":"output-file","error_file_id":"error-file","request_counts":{"total":3,"completed":2,"failed":1}}`))
+	}))
+	defer server.Close()
+
+	provider := newTestGigaChatChatProvider(t, server.URL)
+	response, bifrostErr := provider.BatchRetrieve(testBifrostContext(), []schemas.Key{testGigaChatAccessTokenKey("batch-retrieve-token")}, &schemas.BifrostBatchRetrieveRequest{
+		Provider: schemas.GigaChat,
+		BatchID:  "batch-1",
+	})
+	if bifrostErr != nil {
+		t.Fatalf("BatchRetrieve returned error: %v", bifrostErr)
+	}
+	if response.ID != "batch-1" || response.Status != schemas.BatchStatusCompleted || response.Endpoint != string(schemas.BatchEndpointEmbeddings) {
+		t.Fatalf("unexpected retrieve response: %#v", response)
+	}
+	if response.OutputFileID == nil || *response.OutputFileID != "output-file" || response.ErrorFileID == nil || *response.ErrorFileID != "error-file" {
+		t.Fatalf("file ids mismatch: output=%v error=%v", response.OutputFileID, response.ErrorFileID)
+	}
+	if response.RequestCounts.Total != 3 || response.RequestCounts.Completed != 2 || response.RequestCounts.Failed != 1 {
+		t.Fatalf("request counts mismatch: %#v", response.RequestCounts)
+	}
+}
+
+func testGigaChatBatchCreateUnsupportedEndpoint(t *testing.T) {
+	t.Parallel()
+
+	provider, err := NewGigaChatProvider(&schemas.ProviderConfig{}, nil)
+	if err != nil {
+		t.Fatalf("NewGigaChatProvider returned error: %v", err)
+	}
+
+	response, bifrostErr := provider.BatchCreate(testBifrostContext(), testGigaChatAccessTokenKey("batch-token"), &schemas.BifrostBatchCreateRequest{
+		Provider: schemas.GigaChat,
+		Endpoint: schemas.BatchEndpointCompletions,
+		Requests: []schemas.BatchRequestItem{{
+			CustomID: "bad-1",
+			Body: map[string]interface{}{
+				"model":  "GigaChat",
+				"prompt": "Hello",
+			},
+		}},
+	})
+	if response != nil {
+		t.Fatalf("expected nil response, got %#v", response)
+	}
+	if bifrostErr == nil || !strings.Contains(bifrostErr.Error.Message, "do not support endpoint") {
+		t.Fatalf("unexpected error: %v", bifrostErr)
+	}
+}
+
+func testGigaChatBatchCreateUnsupportedCompletionWindow(t *testing.T) {
+	t.Parallel()
+
+	provider, err := NewGigaChatProvider(&schemas.ProviderConfig{}, nil)
+	if err != nil {
+		t.Fatalf("NewGigaChatProvider returned error: %v", err)
+	}
+
+	response, bifrostErr := provider.BatchCreate(testBifrostContext(), testGigaChatAccessTokenKey("batch-token"), &schemas.BifrostBatchCreateRequest{
+		Provider:         schemas.GigaChat,
+		Endpoint:         schemas.BatchEndpointChatCompletions,
+		CompletionWindow: "1h",
+		Requests: []schemas.BatchRequestItem{{
+			CustomID: "chat-1",
+			Body: map[string]interface{}{
+				"model": "GigaChat",
+				"messages": []map[string]string{
+					{"role": "user", "content": "Hello"},
+				},
+			},
+		}},
+	})
+	if response != nil {
+		t.Fatalf("expected nil response, got %#v", response)
+	}
+	if bifrostErr == nil || !strings.Contains(bifrostErr.Error.Message, "completion_window=24h only") {
+		t.Fatalf("unexpected error: %v", bifrostErr)
 	}
 }
 
