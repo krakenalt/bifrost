@@ -351,6 +351,13 @@ type GigaChatResponsesRequest struct {
 	ExtraParams   map[string]interface{}         `json:"-"`
 }
 
+// GigaChatResponsesStorage configures v2 thread storage.
+type GigaChatResponsesStorage struct {
+	Limit    *int                   `json:"limit,omitempty"`
+	ThreadID *string                `json:"thread_id,omitempty"`
+	Metadata map[string]interface{} `json:"metadata,omitempty"`
+}
+
 // GetExtraParams returns provider-specific passthrough fields.
 func (request *GigaChatResponsesRequest) GetExtraParams() map[string]interface{} {
 	if request == nil || request.ExtraParams == nil {

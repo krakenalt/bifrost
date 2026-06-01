@@ -46,14 +46,15 @@ func ToGigaChatResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) (*G
 		Model:    bifrostReq.Model,
 		Messages: messages,
 	}
-	if bifrostReq.Params == nil {
-		return gigaChatReq, nil
+	params := bifrostReq.Params
+	if params == nil {
+		params = &schemas.ResponsesParameters{}
 	}
 
-	if unsupportedParams := unsupportedGigaChatResponsesParams(bifrostReq.Params); len(unsupportedParams) > 0 {
+	if unsupportedParams := unsupportedGigaChatResponsesParams(params); len(unsupportedParams) > 0 {
 		return nil, fmt.Errorf("GigaChat Responses do not support parameter(s): %s", strings.Join(unsupportedParams, ", "))
 	}
-	if err := applyGigaChatResponsesParams(gigaChatReq, bifrostReq.Params); err != nil {
+	if err := applyGigaChatResponsesParams(gigaChatReq, params); err != nil {
 		return nil, err
 	}
 	return gigaChatReq, nil
@@ -126,14 +127,12 @@ func ToBifrostResponsesResponse(providerName schemas.ModelProvider, response *Gi
 	if createdAt == 0 {
 		createdAt = response.Created
 	}
-	responseID := response.ID
-	if strings.TrimSpace(responseID) == "" && response.MessageID != nil {
-		responseID = *response.MessageID
-	}
+	responseID := toBifrostGigaChatResponsesResponseID(response)
 
 	bifrostResponse := &schemas.BifrostResponsesResponse{
 		Object:            "response",
 		CreatedAt:         createdAt,
+		Conversation:      toBifrostGigaChatResponsesConversation(response.ThreadID),
 		Model:             response.Model,
 		Output:            output,
 		Status:            status,
@@ -173,13 +172,46 @@ func ToBifrostResponsesStreamResponse(providerName schemas.ModelProvider, respon
 	ensureGigaChatResponsesStreamLifecycleRole(chatResponse, state)
 
 	events := chatResponse.ToBifrostResponsesStreamResponse(state)
+	conversation := toBifrostGigaChatResponsesConversation(response.ThreadID)
 	for _, event := range events {
 		if event != nil {
 			event.ExtraFields.Provider = providerName
 			event.ExtraFields.RequestType = schemas.ResponsesStreamRequest
+			if event.Response != nil && event.Response.Conversation == nil {
+				event.Response.Conversation = conversation
+			}
 		}
 	}
 	return events
+}
+
+func toBifrostGigaChatResponsesResponseID(response *GigaChatResponsesResponse) string {
+	if response == nil {
+		return ""
+	}
+	if responseID := strings.TrimSpace(response.ID); responseID != "" {
+		return responseID
+	}
+	if response.ThreadID != nil {
+		if threadID := strings.TrimSpace(*response.ThreadID); threadID != "" {
+			return threadID
+		}
+	}
+	if response.MessageID != nil {
+		return strings.TrimSpace(*response.MessageID)
+	}
+	return ""
+}
+
+func toBifrostGigaChatResponsesConversation(threadID *string) *schemas.ResponsesResponseConversation {
+	if threadID == nil || strings.TrimSpace(*threadID) == "" {
+		return nil
+	}
+	return &schemas.ResponsesResponseConversation{
+		ResponsesResponseConversationStruct: &schemas.ResponsesResponseConversationStruct{
+			ID: strings.TrimSpace(*threadID),
+		},
+	}
 }
 
 func toBifrostGigaChatResponsesChatStreamResponse(providerName schemas.ModelProvider, response *GigaChatResponsesResponse) *schemas.BifrostChatResponse {
@@ -191,10 +223,7 @@ func toBifrostGigaChatResponsesChatStreamResponse(providerName schemas.ModelProv
 	if createdAt == 0 {
 		createdAt = response.Created
 	}
-	responseID := response.ID
-	if strings.TrimSpace(responseID) == "" && response.MessageID != nil {
-		responseID = *response.MessageID
-	}
+	responseID := toBifrostGigaChatResponsesResponseID(response)
 
 	streamResponse := &GigaChatChatStreamResponse{
 		ID:                responseID,
@@ -711,7 +740,63 @@ func applyGigaChatResponsesParams(gigaChatReq *GigaChatResponsesRequest, params 
 	}
 	gigaChatReq.ToolConfig = toolConfig
 
+	if err := applyGigaChatResponsesStorage(gigaChatReq, params); err != nil {
+		return err
+	}
+
 	return applyGigaChatResponsesExtraParams(gigaChatReq, params.ExtraParams)
+}
+
+func applyGigaChatResponsesStorage(gigaChatReq *GigaChatResponsesRequest, params *schemas.ResponsesParameters) error {
+	if gigaChatReq == nil || params == nil {
+		return nil
+	}
+
+	if params.Store != nil && !*params.Store {
+		if hasGigaChatResponsesStorageParams(params) {
+			return fmt.Errorf("GigaChat Responses cannot combine store=false with conversation, previous_response_id, or metadata")
+		}
+		gigaChatReq.Storage = false
+		return nil
+	}
+
+	storage := &GigaChatResponsesStorage{}
+	conversationID := trimStringPtr(params.Conversation)
+	previousResponseID := trimStringPtr(params.PreviousResponseID)
+	switch {
+	case conversationID != "" && previousResponseID != "" && conversationID != previousResponseID:
+		return fmt.Errorf("GigaChat Responses requires conversation and previous_response_id to reference the same thread_id")
+	case conversationID != "":
+		storage.ThreadID = &conversationID
+	case previousResponseID != "":
+		storage.ThreadID = &previousResponseID
+	}
+
+	if params.Metadata != nil && len(*params.Metadata) > 0 {
+		storage.Metadata = make(map[string]interface{}, len(*params.Metadata))
+		for key, value := range *params.Metadata {
+			storage.Metadata[key] = value
+		}
+	}
+
+	gigaChatReq.Storage = storage
+	return nil
+}
+
+func hasGigaChatResponsesStorageParams(params *schemas.ResponsesParameters) bool {
+	if params == nil {
+		return false
+	}
+	return trimStringPtr(params.Conversation) != "" ||
+		trimStringPtr(params.PreviousResponseID) != "" ||
+		(params.Metadata != nil && len(*params.Metadata) > 0)
+}
+
+func trimStringPtr(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return strings.TrimSpace(*value)
 }
 
 func toGigaChatResponsesMessages(message schemas.ResponsesMessage) ([]GigaChatResponsesMessage, error) {
@@ -1129,17 +1214,13 @@ func unsupportedGigaChatResponsesParams(params *schemas.ResponsesParameters) []s
 	}
 
 	addIf(params.Background != nil, "background")
-	addIf(params.Conversation != nil, "conversation")
 	addIf(len(params.Include) > 0, "include")
 	addIf(params.MaxToolCalls != nil, "max_tool_calls")
-	addIf(params.Metadata != nil && len(*params.Metadata) > 0, "metadata")
 	addIf(params.ParallelToolCalls != nil && *params.ParallelToolCalls, "parallel_tool_calls")
-	addIf(params.PreviousResponseID != nil, "previous_response_id")
 	addIf(params.PromptCacheKey != nil, "prompt_cache_key")
 	addIf(params.SafetyIdentifier != nil, "safety_identifier")
 	addIf(params.ServiceTier != nil, "service_tier")
 	addIf(params.StreamOptions != nil, "stream_options")
-	addIf(params.Store != nil && *params.Store, "store")
 	addIf(params.Truncation != nil, "truncation")
 	addIf(params.User != nil, "user")
 	if params.Reasoning != nil {

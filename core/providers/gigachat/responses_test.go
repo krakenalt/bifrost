@@ -46,6 +46,7 @@ func testGigaChatResponsesRequestConversion(t *testing.T) {
 	t.Run("RejectsUnsupportedParams", testGigaChatResponsesRejectsUnsupportedParams)
 	t.Run("RejectsUnsupportedFileInputs", testGigaChatResponsesRejectsUnsupportedFileInputs)
 	t.Run("FunctionCallOutputUsesCallIDAsToolsStateID", testGigaChatResponsesFunctionCallOutputUsesCallIDAsToolsStateID)
+	t.Run("ThreadStorage", testGigaChatResponsesThreadStorage)
 }
 
 func testGigaChatResponses(t *testing.T) {
@@ -57,6 +58,7 @@ func testGigaChatResponses(t *testing.T) {
 	t.Run("ConverterUsesToolStateIDAliasAsCallID", testGigaChatResponsesConverterUsesToolStateIDAliasAsCallID)
 	t.Run("ConverterFallsBackToResponseToolsStateID", testGigaChatResponsesConverterFallsBackToResponseToolsStateID)
 	t.Run("ConverterPreservesOrdinaryMessageToolStateID", testGigaChatResponsesConverterPreservesOrdinaryMessageToolStateID)
+	t.Run("ConverterMapsThreadStorage", testGigaChatResponsesConverterMapsThreadStorage)
 	t.Run("ExecutesWithOAuthToken", testGigaChatResponsesExecutesWithOAuthToken)
 	t.Run("UploadsInputImageAttachment", testGigaChatResponsesUploadsInputImageAttachment)
 	t.Run("UploadsInlineFileAttachment", testGigaChatResponsesUploadsInlineFileAttachment)
@@ -394,6 +396,68 @@ func testGigaChatResponsesFunctionCallOutputUsesCallIDAsToolsStateID(t *testing.
 	}
 	if message.Content[0].FunctionResult == nil || message.Content[0].FunctionResult.Result != toolOutput {
 		t.Fatalf("function result mismatch: %#v", message.Content)
+	}
+}
+
+func testGigaChatResponsesThreadStorage(t *testing.T) {
+	t.Parallel()
+
+	request := testGigaChatResponsesRequest()
+	gigaChatReq, err := ToGigaChatResponsesRequest(request)
+	if err != nil {
+		t.Fatalf("ToGigaChatResponsesRequest returned error: %v", err)
+	}
+	storage, ok := gigaChatReq.Storage.(*GigaChatResponsesStorage)
+	if !ok {
+		t.Fatalf("storage should default to an object, got %#v", gigaChatReq.Storage)
+	}
+	if storage.ThreadID != nil || len(storage.Metadata) != 0 {
+		t.Fatalf("default storage should be empty, got %#v", storage)
+	}
+	body, err := json.Marshal(gigaChatReq)
+	if err != nil {
+		t.Fatalf("failed to marshal GigaChat request: %v", err)
+	}
+	if !strings.Contains(string(body), `"storage":{}`) {
+		t.Fatalf("default storage object missing from request: %s", body)
+	}
+
+	threadID := "thread-123"
+	metadata := map[string]any{"tenant": "test"}
+	request.Params = &schemas.ResponsesParameters{
+		PreviousResponseID: &threadID,
+		Metadata:           &metadata,
+	}
+	gigaChatReq, err = ToGigaChatResponsesRequest(request)
+	if err != nil {
+		t.Fatalf("ToGigaChatResponsesRequest with previous_response_id returned error: %v", err)
+	}
+	storage, ok = gigaChatReq.Storage.(*GigaChatResponsesStorage)
+	if !ok || storage.ThreadID == nil || *storage.ThreadID != threadID {
+		t.Fatalf("thread storage mismatch: %#v", gigaChatReq.Storage)
+	}
+	if storage.Metadata["tenant"] != "test" {
+		t.Fatalf("storage metadata mismatch: %#v", storage.Metadata)
+	}
+
+	store := false
+	request.Params = &schemas.ResponsesParameters{Store: &store}
+	gigaChatReq, err = ToGigaChatResponsesRequest(request)
+	if err != nil {
+		t.Fatalf("ToGigaChatResponsesRequest with store=false returned error: %v", err)
+	}
+	if disabled, ok := gigaChatReq.Storage.(bool); !ok || disabled {
+		t.Fatalf("store=false should map to storage=false, got %#v", gigaChatReq.Storage)
+	}
+
+	otherThreadID := "thread-456"
+	request.Params = &schemas.ResponsesParameters{
+		Conversation:       &threadID,
+		PreviousResponseID: &otherThreadID,
+	}
+	_, err = ToGigaChatResponsesRequest(request)
+	if err == nil || !strings.Contains(err.Error(), "same thread_id") {
+		t.Fatalf("expected thread id conflict error, got %v", err)
 	}
 }
 
@@ -935,6 +999,39 @@ func testGigaChatResponsesConverterPreservesOrdinaryMessageToolStateID(t *testin
 	stateID := rawStateIDs[0]
 	if stateID["tools_state_id"] != "019e8282-bb13-73fc-bbe8-5f52856d166b" || stateID["message_id"] != "ordinary-message" || stateID["role"] != "assistant" || stateID["index"] != 0 {
 		t.Fatalf("message tool state metadata mismatch: %#v", stateID)
+	}
+}
+
+func testGigaChatResponsesConverterMapsThreadStorage(t *testing.T) {
+	t.Parallel()
+
+	response := &GigaChatResponsesResponse{
+		ThreadID:  schemas.Ptr("thread-123"),
+		MessageID: schemas.Ptr("message-456"),
+		Model:     "GigaChat-3-Ultra",
+		Messages: []GigaChatResponsesMessage{{
+			Role: "assistant",
+			Content: []GigaChatResponsesContentPart{{
+				Text: schemas.Ptr("Stored context response."),
+			}},
+			FinishReason: schemas.Ptr("stop"),
+		}},
+	}
+
+	converted := ToBifrostResponsesResponse(schemas.GigaChat, response)
+	if converted == nil {
+		t.Fatal("expected response, got nil")
+	}
+	if converted.ID == nil || *converted.ID != "thread-123" {
+		t.Fatalf("response id should fall back to thread id, got %#v", converted.ID)
+	}
+	if converted.Conversation == nil ||
+		converted.Conversation.ResponsesResponseConversationStruct == nil ||
+		converted.Conversation.ResponsesResponseConversationStruct.ID != "thread-123" {
+		t.Fatalf("conversation mismatch: %#v", converted.Conversation)
+	}
+	if converted.ProviderExtraFields["thread_id"] != "thread-123" || converted.ProviderExtraFields["message_id"] != "message-456" {
+		t.Fatalf("provider extra fields mismatch: %#v", converted.ProviderExtraFields)
 	}
 }
 
@@ -1759,6 +1856,10 @@ func assertGigaChatResponsesRequestBody(t *testing.T, request *http.Request) {
 	}
 	if got := modelOptions["max_tokens"]; got != float64(128) {
 		t.Fatalf("max_tokens mismatch: got %#v", got)
+	}
+	storage, ok := payload["storage"].(map[string]interface{})
+	if !ok || len(storage) != 0 {
+		t.Fatalf("storage mismatch: %#v", payload["storage"])
 	}
 	messages, ok := payload["messages"].([]interface{})
 	if !ok || len(messages) != 1 {

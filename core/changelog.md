@@ -1,3 +1,4 @@
+- feat: support GigaChat Responses thread storage
 - fix: normalize GigaChat file upload formats for supported MIME types
 - fix: reuse GigaChat uploaded attachments across inference retries
 - feat: support GigaChat Responses file auto-upload from OpenAI content blocks
