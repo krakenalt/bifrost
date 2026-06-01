@@ -866,21 +866,11 @@ func toGigaChatResponsesContentParts(content *schemas.ResponsesMessageContent) (
 				parts = append(parts, GigaChatResponsesContentPart{Text: block.Text})
 			}
 		case schemas.ResponsesInputMessageContentBlockTypeFile:
-			if block.FileID == nil || strings.TrimSpace(*block.FileID) == "" {
-				return nil, fmt.Errorf("content block %d: GigaChat file content requires file_id", index)
+			file, err := toGigaChatResponsesContentFile(index, block)
+			if err != nil {
+				return nil, err
 			}
-			file := GigaChatResponsesContentFile{
-				ID:     strings.TrimSpace(*block.FileID),
-				MIME:   nil,
-				Target: nil,
-			}
-			if block.ResponsesInputMessageContentBlockFile != nil {
-				if block.FileData != nil || block.FileURL != nil {
-					return nil, fmt.Errorf("content block %d: GigaChat Responses supports pre-uploaded file_id references only", index)
-				}
-				file.MIME = block.FileType
-			}
-			parts = append(parts, GigaChatResponsesContentPart{Files: []GigaChatResponsesContentFile{file}})
+			parts = append(parts, GigaChatResponsesContentPart{Files: []GigaChatResponsesContentFile{*file}})
 		case schemas.ResponsesInputMessageContentBlockTypeImage:
 			return nil, fmt.Errorf("content block %d: input_image is not supported by GigaChat Responses request conversion yet", index)
 		case schemas.ResponsesInputMessageContentBlockTypeAudio:
@@ -890,6 +880,28 @@ func toGigaChatResponsesContentParts(content *schemas.ResponsesMessageContent) (
 		}
 	}
 	return parts, nil
+}
+
+func toGigaChatResponsesContentFile(index int, block schemas.ResponsesMessageContentBlock) (*GigaChatResponsesContentFile, error) {
+	if block.ResponsesInputMessageContentBlockFile != nil && (block.FileData != nil || block.FileURL != nil) {
+		return nil, fmt.Errorf("content block %d: GigaChat Responses supports pre-uploaded file_id references only; upload inline file content with the Files API before calling Responses", index)
+	}
+
+	fileID := ""
+	if block.FileID != nil {
+		fileID = strings.TrimSpace(*block.FileID)
+	}
+	if fileID == "" {
+		return nil, fmt.Errorf("content block %d: GigaChat file content requires file_id; upload the file with the Files API before calling Responses", index)
+	}
+
+	file := &GigaChatResponsesContentFile{ID: fileID}
+	if block.ResponsesInputMessageContentBlockFile != nil && block.FileType != nil {
+		if mime := strings.TrimSpace(*block.FileType); mime != "" {
+			file.MIME = &mime
+		}
+	}
+	return file, nil
 }
 
 func parseGigaChatFunctionArguments(arguments *string) (interface{}, error) {

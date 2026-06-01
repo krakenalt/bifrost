@@ -1,3 +1,4 @@
+- feat: align GigaChat Responses file input mapping
 - fix: close GigaChat Responses streams on message done events
 - fix: support GigaChat v1 chat reasoning fields
 - fix: preserve GigaChat tool state ids as Responses call ids

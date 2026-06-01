@@ -32,10 +32,12 @@ func testGigaChatResponsesRequestConversion(t *testing.T) {
 
 	t.Run("SimpleTextInput", testGigaChatResponsesSimpleTextInput)
 	t.Run("InstructionsAndMultiTurnInput", testGigaChatResponsesInstructionsAndMultiTurnInput)
+	t.Run("FileInputReference", testGigaChatResponsesFileInputReference)
 	t.Run("FunctionToolAndToolHistory", testGigaChatResponsesFunctionToolAndToolHistory)
 	t.Run("StructuredOutput", testGigaChatResponsesStructuredOutput)
 	t.Run("RejectsUnsupportedHostedTools", testGigaChatResponsesRejectsUnsupportedHostedTools)
 	t.Run("RejectsUnsupportedParams", testGigaChatResponsesRejectsUnsupportedParams)
+	t.Run("RejectsUnsupportedFileInputs", testGigaChatResponsesRejectsUnsupportedFileInputs)
 	t.Run("FunctionCallOutputUsesCallIDAsToolsStateID", testGigaChatResponsesFunctionCallOutputUsesCallIDAsToolsStateID)
 }
 
@@ -166,6 +168,66 @@ func testGigaChatResponsesInstructionsAndMultiTurnInput(t *testing.T) {
 	}
 }
 
+func testGigaChatResponsesFileInputReference(t *testing.T) {
+	t.Parallel()
+
+	fileID := " file-document "
+	mime := " application/pdf "
+	filename := "document.pdf"
+	request := &schemas.BifrostResponsesRequest{
+		Model: "GigaChat-2-Pro",
+		Input: []schemas.ResponsesMessage{{
+			Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+			Content: &schemas.ResponsesMessageContent{ContentBlocks: []schemas.ResponsesMessageContentBlock{
+				{
+					Type: schemas.ResponsesInputMessageContentBlockTypeText,
+					Text: schemas.Ptr("Summarize this document."),
+				},
+				{
+					Type:   schemas.ResponsesInputMessageContentBlockTypeFile,
+					FileID: &fileID,
+					ResponsesInputMessageContentBlockFile: &schemas.ResponsesInputMessageContentBlockFile{
+						Filename: &filename,
+						FileType: &mime,
+					},
+				},
+			}},
+		}},
+	}
+
+	gigaChatReq, err := ToGigaChatResponsesRequest(request)
+	if err != nil {
+		t.Fatalf("ToGigaChatResponsesRequest returned error: %v", err)
+	}
+	if len(gigaChatReq.Messages) != 1 || len(gigaChatReq.Messages[0].Content) != 2 {
+		t.Fatalf("content parts mismatch: %#v", gigaChatReq.Messages)
+	}
+	files := gigaChatReq.Messages[0].Content[1].Files
+	if len(files) != 1 {
+		t.Fatalf("file refs mismatch: %#v", files)
+	}
+	if files[0].ID != "file-document" {
+		t.Fatalf("file id mismatch: got %q", files[0].ID)
+	}
+	if files[0].MIME == nil || *files[0].MIME != "application/pdf" {
+		t.Fatalf("file mime mismatch: %#v", files[0].MIME)
+	}
+	if files[0].Target != nil {
+		t.Fatalf("target should be omitted without a Bifrost source field, got %#v", files[0].Target)
+	}
+
+	body, err := json.Marshal(gigaChatReq)
+	if err != nil {
+		t.Fatalf("failed to marshal GigaChat request: %v", err)
+	}
+	if !strings.Contains(string(body), `"files":[{"id":"file-document","mime":"application/pdf"}]`) {
+		t.Fatalf("request body should include GigaChat file reference, got %s", body)
+	}
+	if strings.Contains(string(body), filename) {
+		t.Fatalf("filename has no GigaChat v2 file content target mapping and should be omitted, got %s", body)
+	}
+}
+
 func testGigaChatResponsesFunctionToolAndToolHistory(t *testing.T) {
 	t.Parallel()
 
@@ -282,6 +344,74 @@ func testGigaChatResponsesFunctionCallOutputUsesCallIDAsToolsStateID(t *testing.
 	}
 	if message.Content[0].FunctionResult == nil || message.Content[0].FunctionResult.Result != toolOutput {
 		t.Fatalf("function result mismatch: %#v", message.Content)
+	}
+}
+
+func testGigaChatResponsesRejectsUnsupportedFileInputs(t *testing.T) {
+	t.Parallel()
+
+	fileID := "file-document"
+	fileData := "SGVsbG8="
+	fileURL := "https://example.test/document.pdf"
+	cases := []struct {
+		name       string
+		block      schemas.ResponsesMessageContentBlock
+		wantErrSub string
+	}{
+		{
+			name: "MissingFileID",
+			block: schemas.ResponsesMessageContentBlock{
+				Type:   schemas.ResponsesInputMessageContentBlockTypeFile,
+				FileID: schemas.Ptr("  "),
+				ResponsesInputMessageContentBlockFile: &schemas.ResponsesInputMessageContentBlockFile{
+					FileType: schemas.Ptr("text/plain"),
+				},
+			},
+			wantErrSub: "requires file_id",
+		},
+		{
+			name: "InlineFileData",
+			block: schemas.ResponsesMessageContentBlock{
+				Type:   schemas.ResponsesInputMessageContentBlockTypeFile,
+				FileID: &fileID,
+				ResponsesInputMessageContentBlockFile: &schemas.ResponsesInputMessageContentBlockFile{
+					FileData: &fileData,
+				},
+			},
+			wantErrSub: "pre-uploaded file_id references only",
+		},
+		{
+			name: "InlineFileURL",
+			block: schemas.ResponsesMessageContentBlock{
+				Type: schemas.ResponsesInputMessageContentBlockTypeFile,
+				ResponsesInputMessageContentBlockFile: &schemas.ResponsesInputMessageContentBlockFile{
+					FileURL: &fileURL,
+				},
+			},
+			wantErrSub: "pre-uploaded file_id references only",
+		},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			request := &schemas.BifrostResponsesRequest{
+				Model: "GigaChat-2",
+				Input: []schemas.ResponsesMessage{{
+					Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+					Content: &schemas.ResponsesMessageContent{ContentBlocks: []schemas.ResponsesMessageContentBlock{
+						tc.block,
+					}},
+				}},
+			}
+
+			_, err := ToGigaChatResponsesRequest(request)
+			if err == nil || !strings.Contains(err.Error(), tc.wantErrSub) {
+				t.Fatalf("expected %q error, got %v", tc.wantErrSub, err)
+			}
+		})
 	}
 }
 
