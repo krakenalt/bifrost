@@ -1,41 +1,44 @@
 ---
 title: "GigaChat"
-description: "GigaChat API conversion guide - authentication, endpoint configuration, v1 chat, v2 Responses mapping, function tools, embeddings, and streaming behavior"
+description: "GigaChat API conversion guide - authentication, endpoint configuration, v1 chat, v2 Responses mapping, tools, files, batches, embeddings, and streaming behavior"
 icon: "/media/gigachat-nav.svg"
 ---
 
 ## Overview
 
-GigaChat is a custom Bifrost provider, not a pure OpenAI-compatible wrapper. Bifrost handles GigaChat-specific OAuth/password token exchange, optional TLS material, endpoint resolution, v1 chat completions, v2 chat-completions-backed Responses, model listing, embeddings, function tools, and raw payload redaction.
+GigaChat is a custom Bifrost provider, not a pure OpenAI-compatible wrapper. Bifrost handles GigaChat-specific OAuth/password token exchange, optional TLS material, endpoint resolution, v1 chat completions, v2 chat-completions-backed Responses, model listing, embeddings, function tools, Responses built-in tools, Files, Batches, and raw payload redaction.
 
 Key characteristics:
 
 - **Provider-specific authentication** - OAuth authorization key, explicit access token, SDK-compatible password token flow, and optional TLS/client certificate material
 - **Two endpoint families** - Chat Completions, models, and embeddings use GigaChat v1; Bifrost Responses uses GigaChat v2 chat completions
-- **Function tools** - User-defined function tools are supported; OpenAI built-in tools are rejected instead of silently remapped
+- **Function and built-in tools** - User-defined functions are supported, and Responses can map GigaChat-compatible built-ins such as web search, code interpreter, image generation, URL extraction, and 3D generation
+- **Files and Batches** - File upload/list/retrieve/delete/content and batch create/list/retrieve/results are implemented with explicit unsupported errors for unsupported batch actions
 - **Streaming support** - v1 chat and v2 Responses streams are normalized to Bifrost stream chunks
 - **Fail-fast compatibility** - Unsupported OpenAI-only parameters are rejected with explicit errors
 
 ### Supported Operations
 
-| Operation            | Non-Streaming | Streaming | GigaChat Endpoint       |
-| -------------------- | ------------- | --------- | ----------------------- |
-| Chat Completions     | ✅            | ✅        | `/v1/chat/completions`  |
-| Responses API        | ✅            | ✅        | `/v2/chat/completions`  |
-| Embeddings           | ✅            | -         | `/v1/embeddings`        |
-| List Models          | ✅            | -         | `/v1/models`            |
-| Text Completions     | ❌            | ❌        | -                       |
-| Speech (TTS)         | ❌            | ❌        | -                       |
-| Transcriptions (STT) | ❌            | ❌        | -                       |
-| Image Generation     | ❌            | ❌        | -                       |
-| Files                | ❌            | ❌        | -                       |
-| Batch                | ❌            | ❌        | -                       |
-| Count Tokens         | ❌            | -         | -                       |
+| Operation                 | Non-Streaming | Streaming | GigaChat Endpoint                 |
+| ------------------------- | ------------- | --------- | --------------------------------- |
+| Chat Completions          | ✅            | ✅        | `/v1/chat/completions`            |
+| Responses API             | ✅            | ✅        | `/v2/chat/completions`            |
+| Embeddings                | ✅            | -         | `/v1/embeddings`                  |
+| List Models               | ✅            | -         | `/v1/models`                      |
+| Files API                 | ✅            | -         | `/files`, `/files/{file}`         |
+| Batches create/list/retrieve | ✅            | -         | `/batches`                        |
+| Batch results             | ✅            | -         | `/batches` + `/files/{file}/content` |
+| Batch cancel/delete       | ❌            | -         | -                                 |
+| Text Completions          | ❌            | ❌        | -                                 |
+| Speech (TTS)              | ❌            | ❌        | -                                 |
+| Transcriptions (STT)      | ❌            | ❌        | -                                 |
+| Image Generation endpoint | ❌            | ❌        | -                                 |
+| Count Tokens              | ❌            | -         | -                                 |
 
 <Note>
-  GigaChat upstream exposes additional file, image, token counting, and batch
-  capabilities. This Bifrost provider currently supports only the operations
-  listed as ✅ above. Unsupported operations return `UnsupportedOperationError`.
+  Standalone Bifrost Image Generation is not implemented for GigaChat. The
+  Responses API can still pass the GigaChat v2 `image_generate` built-in tool
+  when declared as a Responses tool.
 </Note>
 
 ## Setup & Configuration
@@ -223,6 +226,8 @@ Bifrost ChatCompletion -> GigaChat /v1/chat/completions -> Bifrost ChatCompletio
 | `stop` | `stop` | Direct mapping |
 | `tools` | `functions` | Function tools only |
 | `tool_choice` | `function_call` | Supports `auto`, `none`, and a specific declared function |
+| `reasoning.effort` | `reasoning_effort` | `minimal` maps to `low`; `xhigh` and `max` map to `high`; `none` is omitted |
+| `reasoning.max_tokens` | `reasoning_effort` | Best-effort budget-to-effort mapping when `reasoning.effort` is not set |
 | `extra_params` | provider-specific top-level fields | Control fields such as `functions`, `function_call`, `tools`, `tool_config`, and `parallel_tool_calls` are blocked |
 
 ### Message Conversion
@@ -232,6 +237,7 @@ Bifrost ChatCompletion -> GigaChat /v1/chat/completions -> Bifrost ChatCompletio
 - Text content blocks are concatenated into a single text message.
 - Non-text chat content blocks are rejected.
 - Assistant tool calls are converted to GigaChat `function_call`.
+- Assistant reasoning history is sent as GigaChat `reasoning_content`.
 - Tool result messages become GigaChat `role: "function"` messages and must include a function name or a matching `tool_call_id`.
 - Function result content must be a JSON object string.
 
@@ -242,7 +248,7 @@ GigaChat Chat Completions supports user-defined function tools.
 | Tool feature | Support | Notes |
 | ------------ | ------- | ----- |
 | Function definitions | ✅ | Tool names must start with a Latin letter or underscore and contain only Latin letters, digits, or underscores. |
-| JSON schema parameters | ✅ | Schema must marshal as valid JSON. |
+| JSON schema parameters | ✅ | Nullable/Optional schemas are sanitized for GigaChat compatibility before sending. |
 | `tool_choice: "auto"` | ✅ | Requires at least one function tool. |
 | `tool_choice: "none"` | ✅ | Disables tools. |
 | Specific function choice | ✅ | Function name must match a declared tool. |
@@ -251,9 +257,13 @@ GigaChat Chat Completions supports user-defined function tools.
 | OpenAI built-ins | ❌ | `web_search`, `file_search`, `computer_use`, `mcp`, and similar tools are rejected. |
 | GigaChat built-ins through neutral tools | ❌ | `text2image`, `get_file_content`, and `text2model3d` are rejected through neutral Bifrost tool fields. |
 
+### Reasoning
+
+For v1 chat, Bifrost maps request reasoning controls to GigaChat `reasoning_effort` and preserves model-provided `reasoning_content` on non-streaming and streaming assistant outputs. Reasoning details are supported for text-like reasoning entries; unsupported non-text reasoning detail types return a conversion error.
+
 ### Unsupported Parameters
 
-GigaChat Chat Completions rejects OpenAI-only or provider-mismatched fields such as `audio`, `frequency_penalty`, `presence_penalty`, `logit_bias`, `logprobs`, `top_logprobs`, `metadata`, `modalities`, `prediction`, `prompt_cache_key`, `reasoning`, `response_format`, `seed`, `service_tier`, `stream_options`, `store: true`, `user`, `verbosity`, `web_search_options`, `mcp_servers`, `container`, `cache_control`, and `context_management`.
+GigaChat Chat Completions rejects OpenAI-only or provider-mismatched fields such as `audio`, `frequency_penalty`, `presence_penalty`, `logit_bias`, `logprobs`, `top_logprobs`, `metadata`, `modalities`, `parallel_tool_calls: true`, `prediction`, `prompt_cache_key`, `prompt_cache_retention`, `response_format`, `safety_identifier`, `seed`, `service_tier`, `stream_options`, `store: true`, `top_k`, `speed`, `inference_geo`, `task_budget`, `user`, `verbosity`, `web_search_options`, `mcp_servers`, `container`, `cache_control`, and `context_management`.
 
 ### Streaming
 
@@ -283,8 +293,10 @@ This is a native v2 mapping, not a fallback through `ResponsesRequest.ToChatRequ
 | `reasoning.effort` | `model_options.reasoning.effort` | Ignored only when effort is empty or `none` |
 | `text.format.type: "text"` | `model_options.response_format.type: "text"` | Direct mapping |
 | `text.format.type: "json_schema"` | `model_options.response_format` | Requires a non-empty JSON schema |
-| Function `tools` | `tools[].functions.specifications` | Function tools only |
-| `tool_choice` | `tool_config` | Supports `auto`, `none`, and forced function |
+| Function `tools` | `tools[].functions.specifications` | Function schemas are sanitized before sending |
+| Built-in `tools` | `tools[]` | Supports GigaChat-compatible web search, code interpreter, image generation, URL extraction, and 3D generation |
+| `tool_choice` | `tool_config` | Supports `auto`, `none`, forced function, and forced declared built-in tools |
+| `input_file.file_id` | `messages[].content[].files[].id` | Use the Files API first; inline file bytes and URLs are rejected |
 
 ### Provider-Specific Extra Params
 
@@ -307,6 +319,20 @@ These `extra_params` are mapped to typed GigaChat v2 fields:
 
 Other `extra_params` are passed through as provider-specific top-level fields, except control fields that would conflict with Bifrost's tool mapping: `functions`, `function_call`, `tools`, `tool_config`, and `parallel_tool_calls`.
 
+### Responses Tool Support
+
+| Bifrost/OpenAI tool | GigaChat v2 tool | Notes |
+| ------------------- | ---------------- | ----- |
+| `function` | `functions` | User functions are grouped into one GigaChat functions tool; reserved built-in names such as `web_search` are remapped internally and restored in responses. |
+| `web_search`, `web_search_preview`, dated web-search preview variants | `web_search` | `search_context_size` is carried as a `search_context_size:<value>` flag; `user_location` maps to `user_info.user_location`. Filters and other unsupported web-search controls return errors. |
+| `code_interpreter` | `code_interpreter` | Config fields are passed through as a GigaChat tool config map. |
+| `image_generation` | `image_generate` | Enables the GigaChat v2 built-in tool; it is separate from Bifrost's standalone Image Generation endpoint. |
+| `web_fetch` or provider-specific `url_content_extraction` | `url_content_extraction` | `name` and `description` are preserved when provided. |
+| Provider-specific `model_3d_generate` | `model_3d_generate` | No OpenAI-native equivalent; use only when targeting GigaChat. |
+| `file_search`, `computer_use_preview`, `mcp`, `custom` | ❌ | Rejected unless a future GigaChat mapping is added. |
+
+`tool_choice: "required"` and `tool_choice: "any"` are rejected because GigaChat `tool_config` cannot require an arbitrary tool without a concrete `function_name` or `tool_name`. Forced tool choices must reference a declared function or built-in tool.
+
 ### Unsupported Responses Fields
 
 The GigaChat Responses converter rejects `background`, `conversation`, `include`, `max_tool_calls`, non-empty `metadata`, `parallel_tool_calls: true`, `previous_response_id`, `prompt_cache_key`, `safety_identifier`, `service_tier`, `stream_options`, `store: true`, `truncation`, `user`, `reasoning.generate_summary`, `reasoning.summary`, `reasoning.max_tokens`, and `text.verbosity`.
@@ -318,15 +344,17 @@ Input image and input audio content blocks are not supported yet. File content s
 Bifrost normalizes GigaChat v2 responses into the Responses shape:
 
 - text output becomes `output[].content[].text`;
+- `role: "reasoning"` becomes a Responses `reasoning` item with summary text, not an ordinary message with role `reasoning`;
 - function calls become `function_call` output items;
 - function results become `function_call_output` items;
+- GigaChat `tool_state_id` becomes Responses `call_id` for model-generated function calls, and request `call_id` maps back to GigaChat `tools_state_id`;
 - `finish_reason: "function_call"` is normalized to `tool_calls`;
 - token usage maps to Responses usage, including cached prompt tokens when provided;
-- GigaChat v2 metadata such as `thread_id`, `message_id`, `tools_state_id`, `tool_execution`, `additional_data`, and `system_fingerprint` is preserved in provider extra fields when present.
+- GigaChat v2 metadata such as `thread_id`, `message_id`, `tool_state_id`, `tools_state_id`, `tool_execution`, `additional_data`, and `system_fingerprint` is preserved in provider extra fields when present.
 
 ### Streaming
 
-Responses streaming uses GigaChat v2 SSE chunks and emits Bifrost Responses stream events such as `response.created`, `response.output_item.added`, `response.output_text.delta`, `response.function_call_arguments.delta`, and `response.completed`. Final usage is accumulated from stream chunks when GigaChat includes usage.
+Responses streaming uses GigaChat v2 SSE chunks and emits Bifrost Responses stream events such as `response.created`, `response.output_item.added`, `response.output_text.delta`, `response.reasoning_summary_text.delta`, `response.function_call_arguments.delta`, and `response.completed`. Final usage is accumulated from stream chunks when GigaChat includes usage. GigaChat terminal events such as `response.message.done` are treated as stream completion markers.
 
 ## Embeddings
 
@@ -342,6 +370,56 @@ Embeddings use GigaChat v1 `/embeddings`.
 | embedding-vector input shapes | ❌ | Rejected; text input only. |
 
 The response is normalized to OpenAI-compatible embedding data with `usage.prompt_tokens` and `usage.total_tokens` when GigaChat returns usage.
+
+## Files
+
+The GigaChat provider implements Bifrost's OpenAI-compatible Files surface on top of GigaChat `/files`.
+
+| Bifrost operation | GigaChat behavior | Notes |
+| ----------------- | ----------------- | ----- |
+| `FileUpload` | `POST /files` multipart with `file` and `purpose` fields | Bifrost purpose `assistants` maps to GigaChat `assistant`; other purposes map to `general`. |
+| `FileList` | `GET /files` | GigaChat does not support Bifrost limit/order pagination controls. |
+| `FileRetrieve` | `GET /files/{file}` | Returns normalized file metadata. |
+| `FileDelete` | `POST /files/{file}/delete` | Bifrost's `DELETE /v1/files/{file_id}` calls this upstream endpoint. |
+| `FileContent` | `GET /files/{file}/content` | Raw byte responses are returned as-is; JSON wrappers with base64 `content` are decoded. |
+
+When GigaChat returns purpose `assistant`, Bifrost reports `assistants`. When it returns `general`, Bifrost reports the upload request purpose when known and falls back to `user_data`.
+
+Use the Files API before sending file inputs to Responses: upload the file, then reference the returned `file_id` in an `input_file` content block. Inline file bytes and file URLs are rejected so file content is not silently dropped.
+
+## Batches
+
+Bifrost maps OpenAI-compatible batch requests to GigaChat `/batches`.
+
+| Bifrost endpoint | GigaChat `method` | Notes |
+| ---------------- | ----------------- | ----- |
+| `/v1/chat/completions` or `/chat/completions` | `chat_completions` | Rows are converted through the same GigaChat chat request transformer. |
+| `/v1/responses` or `/responses` | `chat_completions` | Rows are converted through the Responses-to-v2-chat transformer. |
+| `/v1/embeddings` or `/embeddings` | `embedder` | Rows are converted through the embedding transformer. |
+
+`BatchCreate` accepts either `input_file_id` or an inline `requests` array. When `input_file_id` is used, Bifrost downloads the file through GigaChat Files, transforms the JSONL rows, and submits the transformed body to `POST /batches?method=<method>` as `application/octet-stream`.
+
+Supported batch operations:
+
+- `BatchCreate` - `completion_window` defaults to `24h`; any other value is rejected.
+- `BatchList` - returns GigaChat batch jobs from `GET /batches`; Bifrost pagination controls are not supported by GigaChat.
+- `BatchRetrieve` - calls `GET /batches?batch_id=<id>`.
+- `BatchResults` - when GigaChat returns `output_file_id` or `result_file_id`, Bifrost downloads that file through Files and parses JSONL result rows.
+- If GigaChat does not return an output/result file ID, `BatchResults` returns a clear operation error instead of fabricating a results endpoint.
+
+Unsupported batch operations:
+
+- `BatchCancel` and `BatchDelete` return `UnsupportedOperationError`.
+- `input_blob`, `output_folder`, `output_expires_after`, `metadata`, and extra batch-create parameters are rejected.
+
+Status mapping:
+
+| GigaChat status | Bifrost/OpenAI status |
+| --------------- | --------------------- |
+| `created` | `validating` |
+| `in_progress` | `in_progress` |
+| `completed` | `completed` |
+| unknown status | Preserved in provider extra fields and returned as the raw status string when schema requires a status |
 
 ## Models
 
@@ -402,6 +480,60 @@ curl -X POST http://localhost:8080/v1/responses \
         }
       }
     }
+  }'
+```
+
+### Upload a File for Responses
+
+```bash
+curl -X POST 'http://localhost:8080/v1/files?provider=gigachat' \
+  -F purpose=assistants \
+  -F file=@./prompt-context.txt
+```
+
+Then reference the returned file ID in a Responses input:
+
+```bash
+curl -X POST http://localhost:8080/v1/responses \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "gigachat/GigaChat-2-Pro",
+    "input": [
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "input_text",
+            "text": "Summarize this file in three bullets."
+          },
+          {
+            "type": "input_file",
+            "file_id": "file_abc123"
+          }
+        ]
+      }
+    ]
+  }'
+```
+
+### Create a Batch
+
+```bash
+curl -X POST http://localhost:8080/v1/batches \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "gigachat/GigaChat-2-Pro",
+    "endpoint": "/v1/responses",
+    "completion_window": "24h",
+    "requests": [
+      {
+        "custom_id": "request-1",
+        "body": {
+          "model": "GigaChat-2-Pro",
+          "input": "Write a one-sentence status update."
+        }
+      }
+    ]
   }'
 ```
 
