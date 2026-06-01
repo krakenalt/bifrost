@@ -979,21 +979,40 @@ func toGigaChatResponsesResponseFormat(format *schemas.ResponsesTextConfigFormat
 }
 
 func withGigaChatResponseFormatSchemaMetadata(schema interface{}, name *string, description *string) interface{} {
-	schemaMap, ok := schema.(map[string]interface{})
-	if !ok {
+	switch schemaMap := schema.(type) {
+	case map[string]interface{}:
+		if name != nil && strings.TrimSpace(*name) != "" {
+			if _, exists := schemaMap["title"]; !exists {
+				schemaMap["title"] = strings.TrimSpace(*name)
+			}
+		}
+		if description != nil && strings.TrimSpace(*description) != "" {
+			if _, exists := schemaMap["description"]; !exists {
+				schemaMap["description"] = strings.TrimSpace(*description)
+			}
+		}
+		return schemaMap
+	case *schemas.OrderedMap:
+		if schemaMap == nil {
+			return schema
+		}
+		if name != nil && strings.TrimSpace(*name) != "" {
+			if _, exists := schemaMap.Get("title"); !exists {
+				schemaMap.Set("title", strings.TrimSpace(*name))
+			}
+		}
+		if description != nil && strings.TrimSpace(*description) != "" {
+			if _, exists := schemaMap.Get("description"); !exists {
+				schemaMap.Set("description", strings.TrimSpace(*description))
+			}
+		}
+		return schemaMap
+	case schemas.OrderedMap:
+		schemaCopy := schemaMap.Clone()
+		return withGigaChatResponseFormatSchemaMetadata(schemaCopy, name, description)
+	default:
 		return schema
 	}
-	if name != nil && strings.TrimSpace(*name) != "" {
-		if _, exists := schemaMap["title"]; !exists {
-			schemaMap["title"] = strings.TrimSpace(*name)
-		}
-	}
-	if description != nil && strings.TrimSpace(*description) != "" {
-		if _, exists := schemaMap["description"]; !exists {
-			schemaMap["description"] = strings.TrimSpace(*description)
-		}
-	}
-	return schemaMap
 }
 
 func applyGigaChatResponsesExtraParams(gigaChatReq *GigaChatResponsesRequest, extraParams map[string]interface{}) error {

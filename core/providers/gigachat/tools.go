@@ -1,6 +1,7 @@
 package gigachat
 
 import (
+	"bytes"
 	"fmt"
 	"regexp"
 	"sort"
@@ -74,6 +75,7 @@ func toGigaChatChatFunctions(tools []schemas.ChatTool) ([]GigaChatFunction, map[
 
 	functions := make([]GigaChatFunction, 0, len(tools))
 	functionNames := make(map[string]struct{}, len(tools))
+	functionDefinitions := make(map[string]GigaChatFunction, len(tools))
 	for index, tool := range tools {
 		if tool.Type != schemas.ChatToolTypeFunction {
 			return nil, nil, fmt.Errorf("tools[%d]: GigaChat chat completions support user-defined function tools only, got %q", index, tool.Type)
@@ -93,15 +95,28 @@ func toGigaChatChatFunctions(tools []schemas.ChatTool) ([]GigaChatFunction, map[
 			return nil, nil, fmt.Errorf("tools[%d]: %w", index, err)
 		}
 		if _, exists := functionNames[name]; exists {
-			return nil, nil, fmt.Errorf("tools[%d]: duplicate function tool name %q", index, name)
+			sameDefinition, err := sameGigaChatToolDefinition(functionDefinitions[name], GigaChatFunction{
+				Name:        name,
+				Description: tool.Function.Description,
+				Parameters:  parameters,
+			})
+			if err != nil {
+				return nil, nil, fmt.Errorf("tools[%d]: compare duplicate function tool %q: %w", index, name, err)
+			}
+			if sameDefinition {
+				continue
+			}
+			return nil, nil, fmt.Errorf("tools[%d]: duplicate function tool name %q has a different definition", index, name)
 		}
 
-		functionNames[name] = struct{}{}
-		functions = append(functions, GigaChatFunction{
+		function := GigaChatFunction{
 			Name:        name,
 			Description: tool.Function.Description,
 			Parameters:  parameters,
-		})
+		}
+		functionNames[name] = struct{}{}
+		functionDefinitions[name] = function
+		functions = append(functions, function)
 	}
 
 	return functions, functionNames, nil
@@ -165,14 +180,31 @@ func toGigaChatResponsesTools(tools []schemas.ResponsesTool) (*gigaChatResponses
 	}
 
 	specifications := make([]GigaChatResponsesFunctionSpecification, 0, len(tools))
-	functionNames := make(map[string]string, len(tools))
+	functionDefinitions := make(map[string]gigaChatResponsesFunctionDefinition, len(tools))
 	functionsToolIndex := -1
 	for index, tool := range tools {
 		switch {
 		case tool.Type == schemas.ResponsesToolTypeFunction:
-			specification, err := toGigaChatResponsesFunctionSpecification(index, tool, functionNames)
+			specification, name, err := toGigaChatResponsesFunctionSpecification(index, tool)
 			if err != nil {
 				return nil, err
+			}
+			if existing, exists := functionDefinitions[specification.Name]; exists {
+				sameDefinition, err := sameGigaChatToolDefinition(existing.Specification, *specification)
+				if err != nil {
+					return nil, fmt.Errorf("tools[%d]: compare duplicate function tool %q: %w", index, name, err)
+				}
+				if sameDefinition {
+					continue
+				}
+				if existing.OriginalName == name {
+					return nil, fmt.Errorf("tools[%d]: duplicate function tool name %q has a different definition after GigaChat compatibility remapping", index, name)
+				}
+				return nil, fmt.Errorf("tools[%d]: duplicate function tool name %q conflicts with %q after GigaChat compatibility remapping", index, name, existing.OriginalName)
+			}
+			functionDefinitions[specification.Name] = gigaChatResponsesFunctionDefinition{
+				OriginalName:  name,
+				Specification: *specification,
 			}
 			if functionsToolIndex == -1 {
 				functionsToolIndex = len(converted.Tools)
@@ -229,39 +261,52 @@ func toGigaChatResponsesTools(tools []schemas.ResponsesTool) (*gigaChatResponses
 	return converted, nil
 }
 
-func toGigaChatResponsesFunctionSpecification(index int, tool schemas.ResponsesTool, functionNames map[string]string) (*GigaChatResponsesFunctionSpecification, error) {
+type gigaChatResponsesFunctionDefinition struct {
+	OriginalName  string
+	Specification GigaChatResponsesFunctionSpecification
+}
+
+func toGigaChatResponsesFunctionSpecification(index int, tool schemas.ResponsesTool) (*GigaChatResponsesFunctionSpecification, string, error) {
 	if tool.Name == nil || strings.TrimSpace(*tool.Name) == "" {
-		return nil, fmt.Errorf("tools[%d]: function tool name is required", index)
+		return nil, "", fmt.Errorf("tools[%d]: function tool name is required", index)
 	}
 	name := strings.TrimSpace(*tool.Name)
 	if strings.HasPrefix(name, gigaChatResponsesUserFunctionNamePrefix) {
-		return nil, fmt.Errorf("tools[%d]: function tool name %q uses a GigaChat compatibility-reserved prefix", index, name)
+		return nil, "", fmt.Errorf("tools[%d]: function tool name %q uses a GigaChat compatibility-reserved prefix", index, name)
 	}
 	if err := validateGigaChatFunctionName(name); err != nil {
-		return nil, fmt.Errorf("tools[%d]: %w", index, err)
+		return nil, "", fmt.Errorf("tools[%d]: %w", index, err)
 	}
 	if tool.ResponsesToolFunction == nil {
-		return nil, fmt.Errorf("tools[%d]: function tool definition is required", index)
+		return nil, "", fmt.Errorf("tools[%d]: function tool definition is required", index)
 	}
 	parameters, err := sanitizeGigaChatFunctionSchema(tool.ResponsesToolFunction.Parameters)
 	if err != nil {
-		return nil, fmt.Errorf("tools[%d]: %w", index, err)
+		return nil, "", fmt.Errorf("tools[%d]: %w", index, err)
 	}
 	if err := validateGigaChatFunctionStrict(tool.ResponsesToolFunction.Strict); err != nil {
-		return nil, fmt.Errorf("tools[%d]: %w", index, err)
+		return nil, "", fmt.Errorf("tools[%d]: %w", index, err)
 	}
 
 	gigaChatName := toGigaChatResponsesFunctionName(name)
-	if existing, exists := functionNames[gigaChatName]; exists {
-		return nil, fmt.Errorf("tools[%d]: duplicate function tool name %q conflicts with %q after GigaChat compatibility remapping", index, name, existing)
-	}
-	functionNames[gigaChatName] = name
 
 	return &GigaChatResponsesFunctionSpecification{
 		Name:        gigaChatName,
 		Description: tool.Description,
 		Parameters:  parameters,
-	}, nil
+	}, name, nil
+}
+
+func sameGigaChatToolDefinition(left interface{}, right interface{}) (bool, error) {
+	leftRaw, err := schemas.MarshalSorted(left)
+	if err != nil {
+		return false, err
+	}
+	rightRaw, err := schemas.MarshalSorted(right)
+	if err != nil {
+		return false, err
+	}
+	return bytes.Equal(leftRaw, rightRaw), nil
 }
 
 func toGigaChatResponsesFunctionName(name string) string {

@@ -59,6 +59,11 @@ func ToGigaChatChatRequest(_ *schemas.BifrostContext, bifrostReq *schemas.Bifros
 	gigaChatReq.Stop = bifrostReq.Params.Stop
 	gigaChatReq.ReasoningEffort = toGigaChatChatReasoningEffort(bifrostReq.Model, bifrostReq.Params)
 	gigaChatReq.ExtraParams = bifrostReq.Params.ExtraParams
+	responseFormat, err := toGigaChatChatResponseFormat(bifrostReq.Params.ResponseFormat)
+	if err != nil {
+		return nil, err
+	}
+	gigaChatReq.ResponseFormat = responseFormat
 	functions, functionNames, err := toGigaChatChatFunctions(bifrostReq.Params.Tools)
 	if err != nil {
 		return nil, err
@@ -390,7 +395,6 @@ func unsupportedGigaChatChatParams(params *schemas.ChatParameters) []string {
 	addIf(params.PresencePenalty != nil, "presence_penalty")
 	addIf(params.PromptCacheKey != nil, "prompt_cache_key")
 	addIf(params.PromptCacheRetention != nil, "prompt_cache_retention")
-	addIf(params.ResponseFormat != nil, "response_format")
 	addIf(params.SafetyIdentifier != nil, "safety_identifier")
 	addIf(params.Seed != nil, "seed")
 	addIf(params.ServiceTier != nil, "service_tier")
@@ -412,6 +416,132 @@ func unsupportedGigaChatChatParams(params *schemas.ChatParameters) []string {
 
 	sort.Strings(unsupported)
 	return unsupported
+}
+
+func toGigaChatChatResponseFormat(responseFormat *interface{}) (interface{}, error) {
+	if responseFormat == nil {
+		return nil, nil
+	}
+
+	responseFormatMap, ok := schemas.SafeExtractOrderedMap(*responseFormat)
+	if !ok || responseFormatMap == nil {
+		return nil, fmt.Errorf("response_format must be a JSON object")
+	}
+
+	formatTypeRaw, ok := responseFormatMap.Get("type")
+	if !ok {
+		return nil, fmt.Errorf("response_format.type is required")
+	}
+	formatType, ok := schemas.SafeExtractString(formatTypeRaw)
+	if !ok || strings.TrimSpace(formatType) == "" {
+		return nil, fmt.Errorf("response_format.type must be a non-empty string")
+	}
+	formatType = strings.TrimSpace(formatType)
+
+	switch formatType {
+	case "json_schema":
+		return toGigaChatChatJSONSchemaResponseFormat(responseFormatMap)
+	default:
+		return nil, fmt.Errorf("response_format type %q is not supported by GigaChat v1 chat completions", formatType)
+	}
+}
+
+func toGigaChatChatJSONSchemaResponseFormat(responseFormatMap *schemas.OrderedMap) (interface{}, error) {
+	var (
+		schemaRaw   interface{}
+		name        *string
+		description *string
+		strict      *bool
+		err         error
+	)
+
+	if jsonSchemaRaw, ok := responseFormatMap.Get("json_schema"); ok {
+		jsonSchemaMap, ok := schemas.SafeExtractOrderedMap(jsonSchemaRaw)
+		if !ok || jsonSchemaMap == nil {
+			return nil, fmt.Errorf("response_format json_schema must be a JSON object")
+		}
+		schemaRaw, ok = jsonSchemaMap.Get("schema")
+		if !ok || schemaRaw == nil {
+			return nil, fmt.Errorf("response_format json_schema requires schema")
+		}
+		name, err = optionalGigaChatResponseFormatString(jsonSchemaMap, "name")
+		if err != nil {
+			return nil, err
+		}
+		description, err = optionalGigaChatResponseFormatString(jsonSchemaMap, "description")
+		if err != nil {
+			return nil, err
+		}
+		strict, err = optionalGigaChatResponseFormatBool(jsonSchemaMap, "strict")
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		var ok bool
+		schemaRaw, ok = responseFormatMap.Get("schema")
+		if !ok || schemaRaw == nil {
+			return nil, fmt.Errorf("response_format json_schema requires schema")
+		}
+		name, err = optionalGigaChatResponseFormatString(responseFormatMap, "name")
+		if err != nil {
+			return nil, err
+		}
+		description, err = optionalGigaChatResponseFormatString(responseFormatMap, "description")
+		if err != nil {
+			return nil, err
+		}
+		strict, err = optionalGigaChatResponseFormatBool(responseFormatMap, "strict")
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	schemaMap, ok := asGigaChatSchemaMap(schemaRaw)
+	if !ok || schemaMap == nil {
+		return nil, fmt.Errorf("response_format json_schema.schema must be a JSON object")
+	}
+	schema, err := cloneGigaChatSchemaMap(schemaMap)
+	if err != nil {
+		return nil, fmt.Errorf("response_format json_schema.schema is invalid: %w", err)
+	}
+	schemaWithMetadata := withGigaChatResponseFormatSchemaMetadata(schema, name, description)
+
+	gigaChatResponseFormat := schemas.NewOrderedMapFromPairs(
+		schemas.KV("type", "json_schema"),
+		schemas.KV("schema", schemaWithMetadata),
+	)
+	if strict != nil {
+		gigaChatResponseFormat.Set("strict", *strict)
+	}
+	return gigaChatResponseFormat, nil
+}
+
+func optionalGigaChatResponseFormatString(values *schemas.OrderedMap, name string) (*string, error) {
+	raw, ok := values.Get(name)
+	if !ok || raw == nil {
+		return nil, nil
+	}
+	value, ok := schemas.SafeExtractString(raw)
+	if !ok {
+		return nil, fmt.Errorf("response_format json_schema.%s must be a string", name)
+	}
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil, nil
+	}
+	return &value, nil
+}
+
+func optionalGigaChatResponseFormatBool(values *schemas.OrderedMap, name string) (*bool, error) {
+	raw, ok := values.Get(name)
+	if !ok || raw == nil {
+		return nil, nil
+	}
+	value, ok := schemas.SafeExtractBool(raw)
+	if !ok {
+		return nil, fmt.Errorf("response_format json_schema.%s must be a boolean", name)
+	}
+	return &value, nil
 }
 
 func toGigaChatChatReasoningEffort(model string, params *schemas.ChatParameters) *string {

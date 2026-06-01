@@ -19,9 +19,12 @@ func testGigaChatChatCompletion(t *testing.T) {
 	t.Parallel()
 
 	t.Run("ConverterMapsRequest", testGigaChatChatConverterMapsRequest)
+	t.Run("ConverterMapsOpenAIJSONSchemaResponseFormat", testGigaChatChatConverterMapsOpenAIJSONSchemaResponseFormat)
+	t.Run("ConverterMapsGigaChatJSONSchemaResponseFormat", testGigaChatChatConverterMapsGigaChatJSONSchemaResponseFormat)
 	t.Run("ConverterPreservesAssistantReasoningContent", testGigaChatChatConverterPreservesAssistantReasoningContent)
 	t.Run("ExecutesWithOAuthTokenAndExtraParams", testGigaChatChatCompletionExecutesWithOAuthTokenAndExtraParams)
 	t.Run("RejectsUnsupportedTools", testGigaChatChatCompletionRejectsUnsupportedTools)
+	t.Run("RejectsUnsupportedResponseFormat", testGigaChatChatCompletionRejectsUnsupportedResponseFormat)
 	t.Run("MapsProviderErrors", testGigaChatChatCompletionMapsProviderErrors)
 	t.Run("RefreshesTokenAfterUnauthorized", testGigaChatChatCompletionRefreshesTokenAfterUnauthorized)
 	t.Run("StreamsSSEChunks", testGigaChatChatCompletionStreamsSSEChunks)
@@ -94,6 +97,75 @@ func testGigaChatChatConverterMapsRequest(t *testing.T) {
 	if !strings.Contains(string(body), `"reasoning_effort":"high"`) {
 		t.Fatalf("request body missing reasoning_effort: %s", body)
 	}
+}
+
+func testGigaChatChatConverterMapsOpenAIJSONSchemaResponseFormat(t *testing.T) {
+	t.Parallel()
+
+	strict := true
+	formatName := "MathAnswer"
+	formatDescription := "Math answer schema."
+	responseFormat := interface{}(map[string]interface{}{
+		"type": "json_schema",
+		"json_schema": map[string]interface{}{
+			"name":        formatName,
+			"description": formatDescription,
+			"strict":      strict,
+			"schema": map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"steps":        map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}},
+					"final_answer": map[string]interface{}{"type": "string"},
+				},
+				"required": []interface{}{"steps", "final_answer"},
+			},
+		},
+	})
+
+	request := testGigaChatChatRequest()
+	request.Params.ResponseFormat = &responseFormat
+
+	gigaChatReq, err := ToGigaChatChatRequest(testBifrostContext(), request)
+	if err != nil {
+		t.Fatalf("ToGigaChatChatRequest returned error: %v", err)
+	}
+	assertGigaChatJSONSchemaResponseFormat(t, gigaChatReq.ResponseFormat, formatName, formatDescription, strict)
+
+	body, err := json.Marshal(gigaChatReq)
+	if err != nil {
+		t.Fatalf("failed to marshal request: %v", err)
+	}
+	if strings.Contains(string(body), `"json_schema":`) {
+		t.Fatalf("GigaChat response_format should use schema, not OpenAI json_schema wrapper: %s", body)
+	}
+	if !strings.Contains(string(body), `"response_format"`) || !strings.Contains(string(body), `"schema"`) {
+		t.Fatalf("request body missing response_format schema: %s", body)
+	}
+}
+
+func testGigaChatChatConverterMapsGigaChatJSONSchemaResponseFormat(t *testing.T) {
+	t.Parallel()
+
+	responseFormat := interface{}(schemas.NewOrderedMapFromPairs(
+		schemas.KV("type", "json_schema"),
+		schemas.KV("schema", schemas.NewOrderedMapFromPairs(
+			schemas.KV("type", "object"),
+			schemas.KV("properties", schemas.NewOrderedMapFromPairs(
+				schemas.KV("status", schemas.NewOrderedMapFromPairs(schemas.KV("type", "string"))),
+			)),
+			schemas.KV("required", []interface{}{"status"}),
+		)),
+		schemas.KV("strict", true),
+	))
+
+	request := testGigaChatChatRequest()
+	request.Params.ResponseFormat = &responseFormat
+
+	gigaChatReq, err := ToGigaChatChatRequest(testBifrostContext(), request)
+	if err != nil {
+		t.Fatalf("ToGigaChatChatRequest returned error: %v", err)
+	}
+	assertGigaChatJSONSchemaResponseFormat(t, gigaChatReq.ResponseFormat, "", "", true)
 }
 
 func testGigaChatChatConverterPreservesAssistantReasoningContent(t *testing.T) {
@@ -253,6 +325,22 @@ func testGigaChatChatCompletionRejectsUnsupportedTools(t *testing.T) {
 		t.Fatal("expected unsupported tools error, got nil")
 	}
 	if !strings.Contains(err.Error(), "tools") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func testGigaChatChatCompletionRejectsUnsupportedResponseFormat(t *testing.T) {
+	t.Parallel()
+
+	responseFormat := interface{}(map[string]interface{}{"type": "json_object"})
+	request := testGigaChatChatRequest()
+	request.Params.ResponseFormat = &responseFormat
+
+	_, err := ToGigaChatChatRequest(testBifrostContext(), request)
+	if err == nil {
+		t.Fatal("expected unsupported response_format error, got nil")
+	}
+	if !strings.Contains(err.Error(), `response_format type "json_object" is not supported`) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
@@ -675,6 +763,50 @@ func assertGigaChatChatRequestBodyWithStream(t *testing.T, request *http.Request
 	}
 	if got := message["content"]; got != "Привет" {
 		t.Fatalf("message content mismatch: got %#v", got)
+	}
+}
+
+func assertGigaChatJSONSchemaResponseFormat(t *testing.T, responseFormat interface{}, wantTitle string, wantDescription string, wantStrict bool) {
+	t.Helper()
+
+	formatMap, ok := schemas.SafeExtractOrderedMap(responseFormat)
+	if !ok || formatMap == nil {
+		t.Fatalf("response_format should be a JSON object: %#v", responseFormat)
+	}
+	if got, _ := formatMap.Get("type"); got != "json_schema" {
+		t.Fatalf("response_format type mismatch: got %#v", got)
+	}
+	if _, hasOpenAIWrapper := formatMap.Get("json_schema"); hasOpenAIWrapper {
+		t.Fatalf("response_format should not contain OpenAI json_schema wrapper: %#v", formatMap)
+	}
+	strictRaw, ok := formatMap.Get("strict")
+	if !ok {
+		t.Fatal("response_format strict is missing")
+	}
+	strict, ok := schemas.SafeExtractBool(strictRaw)
+	if !ok || strict != wantStrict {
+		t.Fatalf("response_format strict mismatch: got %#v, want %v", strictRaw, wantStrict)
+	}
+	schemaRaw, ok := formatMap.Get("schema")
+	if !ok {
+		t.Fatal("response_format schema is missing")
+	}
+	schemaMap, ok := schemas.SafeExtractOrderedMap(schemaRaw)
+	if !ok || schemaMap == nil {
+		t.Fatalf("response_format schema should be a JSON object: %#v", schemaRaw)
+	}
+	if got, _ := schemaMap.Get("type"); got != "object" {
+		t.Fatalf("schema type mismatch: got %#v", got)
+	}
+	if wantTitle != "" {
+		if got, _ := schemaMap.Get("title"); got != wantTitle {
+			t.Fatalf("schema title mismatch: got %#v, want %q", got, wantTitle)
+		}
+	}
+	if wantDescription != "" {
+		if got, _ := schemaMap.Get("description"); got != wantDescription {
+			t.Fatalf("schema description mismatch: got %#v, want %q", got, wantDescription)
+		}
 	}
 }
 

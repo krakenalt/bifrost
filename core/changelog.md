@@ -1,3 +1,4 @@
+- fix: support GigaChat v1 chat response_format json_schema
 - test: expand gated GigaChat live integration coverage
 - feat: map GigaChat batch output files and results content
 - feat: align GigaChat Responses file input mapping

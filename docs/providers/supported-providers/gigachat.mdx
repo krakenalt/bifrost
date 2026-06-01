@@ -228,6 +228,7 @@ Bifrost ChatCompletion -> GigaChat /v1/chat/completions -> Bifrost ChatCompletio
 | `tool_choice` | `function_call` | Supports `auto`, `none`, and a specific declared function |
 | `reasoning.effort` | `reasoning_effort` | `minimal` maps to `low`; `xhigh` and `max` map to `high`; `none` is omitted |
 | `reasoning.max_tokens` | `reasoning_effort` | Best-effort budget-to-effort mapping when `reasoning.effort` is not set |
+| `response_format.type: "json_schema"` | `response_format` | OpenAI/Pydantic-style `json_schema` is converted to GigaChat's `schema` shape |
 | `extra_params` | provider-specific top-level fields | Control fields such as `functions`, `function_call`, `tools`, `tool_config`, and `parallel_tool_calls` are blocked |
 
 ### Message Conversion
@@ -263,7 +264,7 @@ For v1 chat, Bifrost maps request reasoning controls to GigaChat `reasoning_effo
 
 ### Unsupported Parameters
 
-GigaChat Chat Completions rejects OpenAI-only or provider-mismatched fields such as `audio`, `frequency_penalty`, `presence_penalty`, `logit_bias`, `logprobs`, `top_logprobs`, `metadata`, `modalities`, `parallel_tool_calls: true`, `prediction`, `prompt_cache_key`, `prompt_cache_retention`, `response_format`, `safety_identifier`, `seed`, `service_tier`, `stream_options`, `store: true`, `top_k`, `speed`, `inference_geo`, `task_budget`, `user`, `verbosity`, `web_search_options`, `mcp_servers`, `container`, `cache_control`, and `context_management`.
+GigaChat Chat Completions rejects OpenAI-only or provider-mismatched fields such as `audio`, `frequency_penalty`, `presence_penalty`, `logit_bias`, `logprobs`, `top_logprobs`, `metadata`, `modalities`, `parallel_tool_calls: true`, `prediction`, `prompt_cache_key`, `prompt_cache_retention`, unsupported `response_format` types, `safety_identifier`, `seed`, `service_tier`, `stream_options`, `store: true`, `top_k`, `speed`, `inference_geo`, `task_budget`, `user`, `verbosity`, `web_search_options`, `mcp_servers`, `container`, `cache_control`, and `context_management`.
 
 ### Streaming
 

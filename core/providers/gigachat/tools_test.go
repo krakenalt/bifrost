@@ -17,10 +17,12 @@ func testGigaChatTools(t *testing.T) {
 
 	t.Run("ChatMapsFunctionToolsAndHistory", testGigaChatToolsChatMapsFunctionToolsAndHistory)
 	t.Run("ChatToolChoiceVariants", testGigaChatToolsChatToolChoiceVariants)
+	t.Run("ChatDeduplicatesEquivalentFunctionTools", testGigaChatToolsChatDeduplicatesEquivalentFunctionTools)
 	t.Run("ChatRejectsUnsupportedPolicy", testGigaChatToolsChatRejectsUnsupportedPolicy)
 	t.Run("ResponsesMapsBuiltInTools", testGigaChatToolsResponsesMapsBuiltInTools)
 	t.Run("ResponsesToolChoiceVariants", testGigaChatToolsResponsesToolChoiceVariants)
 	t.Run("ResponsesRemapsReservedFunctionNames", testGigaChatToolsResponsesRemapsReservedFunctionNames)
+	t.Run("ResponsesDeduplicatesEquivalentFunctionTools", testGigaChatToolsResponsesDeduplicatesEquivalentFunctionTools)
 	t.Run("SanitizesFunctionSchemas", testGigaChatToolsSanitizesFunctionSchemas)
 	t.Run("ResponsesRejectsUnsupportedPolicy", testGigaChatToolsResponsesRejectsUnsupportedPolicy)
 }
@@ -180,6 +182,21 @@ func testGigaChatToolsChatToolChoiceVariants(t *testing.T) {
 	}
 }
 
+func testGigaChatToolsChatDeduplicatesEquivalentFunctionTools(t *testing.T) {
+	t.Parallel()
+
+	request := testGigaChatChatToolRequest(t, "get_weather")
+	request.Params.Tools = append(request.Params.Tools, request.Params.Tools[0])
+
+	gigaChatReq, err := ToGigaChatChatRequest(testBifrostContext(), request)
+	if err != nil {
+		t.Fatalf("ToGigaChatChatRequest returned error: %v", err)
+	}
+	if len(gigaChatReq.Functions) != 1 || gigaChatReq.Functions[0].Name != "get_weather" {
+		t.Fatalf("duplicate function tools were not deduplicated: %#v", gigaChatReq.Functions)
+	}
+}
+
 func testGigaChatToolsChatRejectsUnsupportedPolicy(t *testing.T) {
 	t.Parallel()
 
@@ -243,6 +260,17 @@ func testGigaChatToolsChatRejectsUnsupportedPolicy(t *testing.T) {
 				request.Params.ToolChoice = &schemas.ChatToolChoice{ChatToolChoiceStr: schemas.Ptr("auto")}
 			},
 			wantErr: "requires at least one",
+		},
+		{
+			name: "ConflictingDuplicateFunction",
+			mutate: func(request *schemas.BifrostChatRequest) {
+				duplicate := request.Params.Tools[0]
+				function := *duplicate.Function
+				duplicate.Function = &function
+				duplicate.Function.Description = schemas.Ptr("Different weather function.")
+				request.Params.Tools = append(request.Params.Tools, duplicate)
+			},
+			wantErr: "different definition",
 		},
 		{
 			name: "ExtraParamFunctionsBypass",
@@ -591,6 +619,26 @@ func testGigaChatToolsResponsesRemapsReservedFunctionNames(t *testing.T) {
 	}
 }
 
+func testGigaChatToolsResponsesDeduplicatesEquivalentFunctionTools(t *testing.T) {
+	t.Parallel()
+
+	request := testGigaChatResponsesToolRequest(t, "get_horoscope")
+	for range 19 {
+		request.Params.Tools = append(request.Params.Tools, request.Params.Tools[0])
+	}
+
+	gigaChatReq, err := ToGigaChatResponsesRequest(request)
+	if err != nil {
+		t.Fatalf("ToGigaChatResponsesRequest returned error: %v", err)
+	}
+	if len(gigaChatReq.Tools) != 1 || gigaChatReq.Tools[0].Functions == nil || len(gigaChatReq.Tools[0].Functions.Specifications) != 1 {
+		t.Fatalf("duplicate function tools were not deduplicated: %#v", gigaChatReq.Tools)
+	}
+	if got := gigaChatReq.Tools[0].Functions.Specifications[0].Name; got != "get_horoscope" {
+		t.Fatalf("function specification name mismatch: got %q", got)
+	}
+}
+
 func testGigaChatToolsSanitizesFunctionSchemas(t *testing.T) {
 	t.Parallel()
 
@@ -831,6 +879,15 @@ func testGigaChatToolsResponsesRejectsUnsupportedPolicy(t *testing.T) {
 				}}
 			},
 			wantErr: "must match a declared",
+		},
+		{
+			name: "ConflictingDuplicateFunction",
+			mutate: func(request *schemas.BifrostResponsesRequest) {
+				duplicate := request.Params.Tools[0]
+				duplicate.Description = schemas.Ptr("Different weather function.")
+				request.Params.Tools = append(request.Params.Tools, duplicate)
+			},
+			wantErr: "different definition",
 		},
 		{
 			name: "ExtraParamToolConfigBypass",

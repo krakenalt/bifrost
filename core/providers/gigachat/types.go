@@ -34,6 +34,7 @@ type GigaChatChatRequest struct {
 	Stop            []string               `json:"stop,omitempty"`
 	Stream          *bool                  `json:"stream,omitempty"`
 	ReasoningEffort *string                `json:"reasoning_effort,omitempty"`
+	ResponseFormat  interface{}            `json:"response_format,omitempty"`
 	FunctionCall    interface{}            `json:"function_call,omitempty"`
 	Functions       []GigaChatFunction     `json:"functions,omitempty"`
 	ExtraParams     map[string]interface{} `json:"-"`

@@ -930,6 +930,29 @@ func TestChatTool_UnmarshalJSON_NormalizesMixedInput(t *testing.T) {
 		assert.Nil(t, tool.DisplayWidthPx)
 	})
 
+	t.Run("function_type_accepts_responses_style_fields", func(t *testing.T) {
+		raw := []byte(`{
+			"type":"function",
+			"name":"get_weather",
+			"description":"Gets current weather.",
+			"parameters":{"type":"object","properties":{"city":{"type":"string"}},"required":["city"]},
+			"strict":false
+		}`)
+		var tool ChatTool
+		require.NoError(t, Unmarshal(raw, &tool))
+
+		assert.Equal(t, ChatToolTypeFunction, tool.Type)
+		require.NotNil(t, tool.Function)
+		assert.Equal(t, "get_weather", tool.Function.Name)
+		require.NotNil(t, tool.Function.Description)
+		assert.Equal(t, "Gets current weather.", *tool.Function.Description)
+		require.NotNil(t, tool.Function.Parameters)
+		assert.Equal(t, "object", tool.Function.Parameters.Type)
+		require.NotNil(t, tool.Function.Strict)
+		assert.False(t, *tool.Function.Strict)
+		assert.Empty(t, tool.Name, "function-type must nil top-level Name (lives in Function.Name)")
+	})
+
 	t.Run("server_tool_type_mixed_with_function_normalizes", func(t *testing.T) {
 		// Caller sends a server-tool but also includes function.
 		raw := []byte(`{
