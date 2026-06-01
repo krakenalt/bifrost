@@ -16,6 +16,9 @@ func (provider *GigaChatProvider) prepareGigaChatChatAttachments(ctx *schemas.Bi
 	if request == nil {
 		return nil, providerUtils.NewBifrostOperationError("chat completion request is nil", nil)
 	}
+	if cached, ok := getCachedGigaChatChatAttachmentRequest(ctx, key, request); ok {
+		return cached, nil
+	}
 
 	var prepared *schemas.BifrostChatRequest
 	for messageIndex := range request.Input {
@@ -41,6 +44,7 @@ func (provider *GigaChatProvider) prepareGigaChatChatAttachments(ctx *schemas.Bi
 	}
 
 	if prepared != nil {
+		setCachedGigaChatChatAttachmentRequest(ctx, key, request, prepared)
 		return prepared, nil
 	}
 	return request, nil

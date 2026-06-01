@@ -26,6 +26,7 @@ func testGigaChatChatCompletion(t *testing.T) {
 	t.Run("ExecutesWithOAuthTokenAndExtraParams", testGigaChatChatCompletionExecutesWithOAuthTokenAndExtraParams)
 	t.Run("UploadsInlineImageAttachment", testGigaChatChatCompletionUploadsInlineImageAttachment)
 	t.Run("UploadsInlineFileAttachment", testGigaChatChatCompletionUploadsInlineFileAttachment)
+	t.Run("ReusesUploadedAttachmentAfterBackendError", testGigaChatChatCompletionReusesUploadedAttachmentAfterBackendError)
 	t.Run("RejectsUnsupportedTools", testGigaChatChatCompletionRejectsUnsupportedTools)
 	t.Run("RejectsUnsupportedResponseFormat", testGigaChatChatCompletionRejectsUnsupportedResponseFormat)
 	t.Run("MapsProviderErrors", testGigaChatChatCompletionMapsProviderErrors)
@@ -540,6 +541,102 @@ func testGigaChatChatCompletionUploadsInlineFileAttachment(t *testing.T) {
 	}
 	if chatRequests.Load() != 1 {
 		t.Fatalf("chat request count mismatch: got %d, want 1", chatRequests.Load())
+	}
+}
+
+func testGigaChatChatCompletionReusesUploadedAttachmentAfterBackendError(t *testing.T) {
+	t.Parallel()
+
+	var uploadRequests atomic.Int32
+	var chatRequests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/v1/files":
+			uploadRequests.Add(1)
+			if err := request.ParseMultipartForm(1024); err != nil {
+				t.Fatalf("failed to parse upload multipart form: %v", err)
+			}
+			file, _, err := request.FormFile("file")
+			if err != nil {
+				t.Fatalf("failed to read uploaded file: %v", err)
+			}
+			defer file.Close()
+			fileBytes, err := io.ReadAll(file)
+			if err != nil {
+				t.Fatalf("failed to read uploaded bytes: %v", err)
+			}
+			if string(fileBytes) != "%PDF retry" {
+				t.Fatalf("uploaded file bytes mismatch: %q", fileBytes)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"id":"uploaded-retry-pdf","object":"file","bytes":10,"created_at":1700000000,"filename":"retry.pdf","purpose":"general"}`))
+		case "/v1/chat/completions":
+			requestIndex := chatRequests.Add(1)
+			body, err := io.ReadAll(request.Body)
+			if err != nil {
+				t.Fatalf("failed to read chat body: %v", err)
+			}
+			assertGigaChatChatBodyAttachment(t, body, "uploaded-retry-pdf")
+			if requestIndex == 1 {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusInternalServerError)
+				_, _ = w.Write([]byte(`{"status":500,"message":"temporary backend failure"}`))
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"model":"GigaChat","object":"chat.completion"}`))
+		default:
+			t.Fatalf("unexpected path: %s", request.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	prompt := "Summarize this file."
+	filename := "retry.pdf"
+	fileData := "data:application/pdf;base64,JVBERiByZXRyeQ=="
+	request := &schemas.BifrostChatRequest{
+		Model: "GigaChat",
+		Input: []schemas.ChatMessage{{
+			Role: schemas.ChatMessageRoleUser,
+			Content: &schemas.ChatMessageContent{
+				ContentBlocks: []schemas.ChatContentBlock{
+					{Type: schemas.ChatContentBlockTypeText, Text: &prompt},
+					{
+						Type: schemas.ChatContentBlockTypeFile,
+						File: &schemas.ChatInputFile{
+							Filename: &filename,
+							FileData: &fileData,
+						},
+					},
+				},
+			},
+		}},
+	}
+
+	provider := newTestGigaChatChatProvider(t, server.URL)
+	ctx := testBifrostContext()
+	key := testGigaChatAccessTokenKey("file-token")
+
+	firstResponse, firstErr := provider.ChatCompletion(ctx, key, request)
+	if firstResponse != nil {
+		t.Fatalf("expected nil response from first backend failure, got %#v", firstResponse)
+	}
+	if firstErr == nil || firstErr.StatusCode == nil || *firstErr.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("expected first backend 500, got %#v", firstErr)
+	}
+
+	response, bifrostErr := provider.ChatCompletion(ctx, key, request)
+	if bifrostErr != nil {
+		t.Fatalf("second ChatCompletion returned error: %v", bifrostErr)
+	}
+	if response == nil {
+		t.Fatal("expected second response, got nil")
+	}
+	if uploadRequests.Load() != 1 {
+		t.Fatalf("upload request count mismatch: got %d, want 1", uploadRequests.Load())
+	}
+	if chatRequests.Load() != 2 {
+		t.Fatalf("chat request count mismatch: got %d, want 2", chatRequests.Load())
 	}
 }
 

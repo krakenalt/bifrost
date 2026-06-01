@@ -1,3 +1,4 @@
+- fix: reuse GigaChat uploaded attachments across inference retries
 - feat: support GigaChat Responses file auto-upload from OpenAI content blocks
 - feat: support GigaChat chat file attachments from OpenAI content blocks
 - fix: support GigaChat embedding encoding_format compatibility

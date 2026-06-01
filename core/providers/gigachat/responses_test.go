@@ -60,6 +60,7 @@ func testGigaChatResponses(t *testing.T) {
 	t.Run("ExecutesWithOAuthToken", testGigaChatResponsesExecutesWithOAuthToken)
 	t.Run("UploadsInputImageAttachment", testGigaChatResponsesUploadsInputImageAttachment)
 	t.Run("UploadsInlineFileAttachment", testGigaChatResponsesUploadsInlineFileAttachment)
+	t.Run("ReusesUploadedAttachmentAfterBackendError", testGigaChatResponsesReusesUploadedAttachmentAfterBackendError)
 	t.Run("MapsProviderErrors", testGigaChatResponsesMapsProviderErrors)
 	t.Run("RefreshesTokenAfterUnauthorized", testGigaChatResponsesRefreshesTokenAfterUnauthorized)
 }
@@ -1182,6 +1183,102 @@ func testGigaChatResponsesUploadsInlineFileAttachment(t *testing.T) {
 	}
 	if responsesRequests.Load() != 1 {
 		t.Fatalf("responses request count mismatch: got %d, want 1", responsesRequests.Load())
+	}
+}
+
+func testGigaChatResponsesReusesUploadedAttachmentAfterBackendError(t *testing.T) {
+	t.Parallel()
+
+	var uploadRequests atomic.Int32
+	var responsesRequests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/v1/files":
+			uploadRequests.Add(1)
+			if err := request.ParseMultipartForm(1024); err != nil {
+				t.Fatalf("failed to parse upload multipart form: %v", err)
+			}
+			file, _, err := request.FormFile("file")
+			if err != nil {
+				t.Fatalf("failed to read uploaded file: %v", err)
+			}
+			defer file.Close()
+			fileBytes, err := io.ReadAll(file)
+			if err != nil {
+				t.Fatalf("failed to read uploaded bytes: %v", err)
+			}
+			if string(fileBytes) != "%PDF retry" {
+				t.Fatalf("uploaded file bytes mismatch: %q", fileBytes)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"id":"uploaded-retry-pdf","object":"file","bytes":10,"created_at":1700000000,"filename":"retry.pdf","purpose":"general"}`))
+		case "/v2/chat/completions":
+			requestIndex := responsesRequests.Add(1)
+			body, err := io.ReadAll(request.Body)
+			if err != nil {
+				t.Fatalf("failed to read responses body: %v", err)
+			}
+			assertGigaChatResponsesBodyFile(t, body, "uploaded-retry-pdf")
+			if requestIndex == 1 {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusInternalServerError)
+				_, _ = w.Write([]byte(`{"status":500,"message":"temporary backend failure"}`))
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"messages":[{"role":"assistant","content":[{"text":"ok"}],"finish_reason":"stop"}],"model":"GigaChat-2"}`))
+		default:
+			t.Fatalf("unexpected path: %s", request.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	prompt := "Summarize this file."
+	filename := "retry.pdf"
+	fileType := "application/pdf"
+	fileData := "data:application/pdf;base64,JVBERiByZXRyeQ=="
+	request := &schemas.BifrostResponsesRequest{
+		Model: "GigaChat-2",
+		Input: []schemas.ResponsesMessage{{
+			Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+			Content: &schemas.ResponsesMessageContent{ContentBlocks: []schemas.ResponsesMessageContentBlock{
+				{Type: schemas.ResponsesInputMessageContentBlockTypeText, Text: &prompt},
+				{
+					Type: schemas.ResponsesInputMessageContentBlockTypeFile,
+					ResponsesInputMessageContentBlockFile: &schemas.ResponsesInputMessageContentBlockFile{
+						Filename: &filename,
+						FileType: &fileType,
+						FileData: &fileData,
+					},
+				},
+			}},
+		}},
+	}
+
+	provider := newTestGigaChatChatProvider(t, server.URL)
+	ctx := testBifrostContext()
+	key := testGigaChatAccessTokenKey("file-token")
+
+	firstResponse, firstErr := provider.Responses(ctx, key, request)
+	if firstResponse != nil {
+		t.Fatalf("expected nil response from first backend failure, got %#v", firstResponse)
+	}
+	if firstErr == nil || firstErr.StatusCode == nil || *firstErr.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("expected first backend 500, got %#v", firstErr)
+	}
+
+	response, bifrostErr := provider.Responses(ctx, key, request)
+	if bifrostErr != nil {
+		t.Fatalf("second Responses returned error: %v", bifrostErr)
+	}
+	if response == nil {
+		t.Fatal("expected second response, got nil")
+	}
+	if uploadRequests.Load() != 1 {
+		t.Fatalf("upload request count mismatch: got %d, want 1", uploadRequests.Load())
+	}
+	if responsesRequests.Load() != 2 {
+		t.Fatalf("responses request count mismatch: got %d, want 2", responsesRequests.Load())
 	}
 }
 
