@@ -1,3 +1,4 @@
+- feat: map GigaChat batch output files and results content
 - feat: align GigaChat Responses file input mapping
 - fix: close GigaChat Responses streams on message done events
 - fix: support GigaChat v1 chat reasoning fields

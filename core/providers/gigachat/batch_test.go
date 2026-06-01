@@ -141,6 +141,9 @@ func TestGigaChatBatchesHTTP(t *testing.T) {
 	t.Run("CreateTransformsFileRows", testGigaChatBatchCreateTransformsFileRows)
 	t.Run("ListParsesWrapper", testGigaChatBatchListParsesWrapper)
 	t.Run("RetrieveParsesSingleObject", testGigaChatBatchRetrieveParsesSingleObject)
+	t.Run("RetrieveMapsResultFileID", testGigaChatBatchRetrieveMapsResultFileID)
+	t.Run("ResultsDownloadsOutputFile", testGigaChatBatchResultsDownloadsOutputFile)
+	t.Run("ResultsWithoutOutputFileID", testGigaChatBatchResultsWithoutOutputFileID)
 	t.Run("UnsupportedEndpoint", testGigaChatBatchCreateUnsupportedEndpoint)
 	t.Run("UnsupportedCompletionWindow", testGigaChatBatchCreateUnsupportedCompletionWindow)
 }
@@ -437,6 +440,114 @@ func testGigaChatBatchRetrieveParsesSingleObject(t *testing.T) {
 	}
 	if response.RequestCounts.Total != 3 || response.RequestCounts.Completed != 2 || response.RequestCounts.Failed != 1 {
 		t.Fatalf("request counts mismatch: %#v", response.RequestCounts)
+	}
+}
+
+func testGigaChatBatchRetrieveMapsResultFileID(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/v1/batches" {
+			t.Fatalf("path mismatch: got %s", request.URL.Path)
+		}
+		if request.Method != http.MethodGet {
+			t.Fatalf("method mismatch: got %s", request.Method)
+		}
+		if got := request.URL.Query().Get("batch_id"); got != "batch-1" {
+			t.Fatalf("batch_id query mismatch: got %q", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"batch-1","object":"batch","method":"chat_completions","status":"completed","result_file_id":"result-file","request_counts":{"total":1,"completed":1}}`))
+	}))
+	defer server.Close()
+
+	provider := newTestGigaChatChatProvider(t, server.URL)
+	response, bifrostErr := provider.BatchRetrieve(testBifrostContext(), []schemas.Key{testGigaChatAccessTokenKey("batch-token")}, &schemas.BifrostBatchRetrieveRequest{
+		Provider: schemas.GigaChat,
+		BatchID:  "batch-1",
+	})
+	if bifrostErr != nil {
+		t.Fatalf("BatchRetrieve returned error: %v", bifrostErr)
+	}
+	if response.OutputFileID == nil || *response.OutputFileID != "result-file" {
+		t.Fatalf("result_file_id was not mapped to output_file_id: %#v", response.OutputFileID)
+	}
+	if response.ProviderExtraFields["gigachat_result_file_id"] != "result-file" {
+		t.Fatalf("result_file_id was not preserved in provider extra fields: %#v", response.ProviderExtraFields)
+	}
+}
+
+func testGigaChatBatchResultsDownloadsOutputFile(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		if got := request.Header.Get("Authorization"); got != "Bearer batch-results-token" {
+			t.Fatalf("authorization header mismatch: got %q", got)
+		}
+		switch request.URL.Path {
+		case "/v1/batches":
+			if request.Method != http.MethodGet {
+				t.Fatalf("method mismatch: got %s", request.Method)
+			}
+			if got := request.URL.Query().Get("batch_id"); got != "batch-1" {
+				t.Fatalf("batch_id query mismatch: got %q", got)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"id":"batch-1","object":"batch","method":"chat_completions","status":"completed","result_file_id":"result-file","request_counts":{"total":1,"completed":1}}`))
+		case "/v1/files/result-file/content":
+			if request.Method != http.MethodGet {
+				t.Fatalf("method mismatch: got %s", request.Method)
+			}
+			w.Header().Set("Content-Type", "application/octet-stream")
+			_, _ = w.Write([]byte(`{"id":"row-1","response":{"status_code":200,"request_id":"req-1","body":{"id":"chatcmpl-1","object":"chat.completion"}}}` + "\n"))
+		default:
+			t.Fatalf("unexpected path: %s", request.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	provider := newTestGigaChatChatProvider(t, server.URL)
+	response, bifrostErr := provider.BatchResults(testBifrostContext(), []schemas.Key{testGigaChatAccessTokenKey("batch-results-token")}, &schemas.BifrostBatchResultsRequest{
+		Provider: schemas.GigaChat,
+		BatchID:  "batch-1",
+	})
+	if bifrostErr != nil {
+		t.Fatalf("BatchResults returned error: %v", bifrostErr)
+	}
+	if response.BatchID != "batch-1" || len(response.Results) != 1 {
+		t.Fatalf("unexpected batch results response: %#v", response)
+	}
+	result := response.Results[0]
+	if result.CustomID != "row-1" || result.Response == nil || result.Response.StatusCode != 200 || result.Response.RequestID != "req-1" {
+		t.Fatalf("unexpected result item: %#v", result)
+	}
+	if response.ProviderExtraFields["gigachat_result_file_id"] != "result-file" || response.ProviderExtraFields["gigachat_batch_output_file_id"] != "result-file" {
+		t.Fatalf("provider extra fields mismatch: %#v", response.ProviderExtraFields)
+	}
+}
+
+func testGigaChatBatchResultsWithoutOutputFileID(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/v1/batches" {
+			t.Fatalf("path mismatch: got %s", request.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"batch-1","object":"batch","method":"chat_completions","status":"in_progress","request_counts":{"total":1}}`))
+	}))
+	defer server.Close()
+
+	provider := newTestGigaChatChatProvider(t, server.URL)
+	response, bifrostErr := provider.BatchResults(testBifrostContext(), []schemas.Key{testGigaChatAccessTokenKey("batch-results-token")}, &schemas.BifrostBatchResultsRequest{
+		Provider: schemas.GigaChat,
+		BatchID:  "batch-1",
+	})
+	if response != nil {
+		t.Fatalf("expected nil response, got %#v", response)
+	}
+	if bifrostErr == nil || !strings.Contains(bifrostErr.Error.Message, "did not return output_file_id or result_file_id") {
+		t.Fatalf("unexpected error: %v", bifrostErr)
 	}
 }
 

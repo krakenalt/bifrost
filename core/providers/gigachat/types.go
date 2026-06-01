@@ -279,6 +279,15 @@ type GigaChatBatchInputRow struct {
 	Request json.RawMessage `json:"request"`
 }
 
+// GigaChatBatchResultRow is a single JSONL row returned by GigaChat batches.
+type GigaChatBatchResultRow struct {
+	ID       string                       `json:"id,omitempty"`
+	CustomID string                       `json:"custom_id,omitempty"`
+	Response *schemas.BatchResultResponse `json:"response,omitempty"`
+	Result   *schemas.BatchResultData     `json:"result,omitempty"`
+	Error    *schemas.BatchResultError    `json:"error,omitempty"`
+}
+
 // # EMBEDDING TYPES
 
 // GigaChatEmbeddingRequest is the v1 embeddings request body.

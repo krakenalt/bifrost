@@ -1046,9 +1046,60 @@ func (provider *GigaChatProvider) BatchDelete(_ *schemas.BifrostContext, _ []sch
 	return nil, provider.unsupported(schemas.BatchDeleteRequest)
 }
 
-// BatchResults is not supported by the GigaChat provider skeleton.
-func (provider *GigaChatProvider) BatchResults(_ *schemas.BifrostContext, _ []schemas.Key, _ *schemas.BifrostBatchResultsRequest) (*schemas.BifrostBatchResultsResponse, *schemas.BifrostError) {
-	return nil, provider.unsupported(schemas.BatchResultsRequest)
+// BatchResults retrieves completed GigaChat batch results through the Files API.
+func (provider *GigaChatProvider) BatchResults(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostBatchResultsRequest) (*schemas.BifrostBatchResultsResponse, *schemas.BifrostError) {
+	if err := providerUtils.CheckOperationAllowed(schemas.GigaChat, provider.customProviderConfig, schemas.BatchResultsRequest); err != nil {
+		return nil, err
+	}
+	if request == nil {
+		return nil, providerUtils.NewBifrostOperationError("batch results request is nil", nil)
+	}
+	if strings.TrimSpace(request.BatchID) == "" {
+		return nil, providerUtils.NewBifrostOperationError("batch_id is required", nil)
+	}
+	if len(keys) == 0 {
+		keys = []schemas.Key{{}}
+	}
+
+	batchResponse, bifrostErr := provider.BatchRetrieve(ctx, keys, &schemas.BifrostBatchRetrieveRequest{
+		Provider: request.Provider,
+		Model:    request.Model,
+		BatchID:  strings.TrimSpace(request.BatchID),
+	})
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+	if batchResponse.OutputFileID == nil || strings.TrimSpace(*batchResponse.OutputFileID) == "" {
+		return nil, providerUtils.NewBifrostOperationError("batch results not available: GigaChat did not return output_file_id or result_file_id (batch may not be completed yet)", nil)
+	}
+
+	outputFileID := strings.TrimSpace(*batchResponse.OutputFileID)
+	fileContentResponse, bifrostErr := provider.readGigaChatBatchOutputFile(ctx, keys, request, outputFileID)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	results, parseErrors := parseGigaChatBatchResultsJSONL(fileContentResponse.Content, provider.logger)
+	providerExtraFields := cloneGigaChatBatchProviderExtraFields(batchResponse.ProviderExtraFields)
+	if providerExtraFields == nil {
+		providerExtraFields = make(map[string]interface{})
+	}
+	providerExtraFields["gigachat_batch_output_file_id"] = outputFileID
+
+	response := &schemas.BifrostBatchResultsResponse{
+		BatchID:             strings.TrimSpace(request.BatchID),
+		Results:             results,
+		ProviderExtraFields: providerExtraFields,
+		ExtraFields: schemas.BifrostResponseExtraFields{
+			Provider:                provider.GetProviderKey(),
+			Latency:                 fileContentResponse.ExtraFields.Latency,
+			ProviderResponseHeaders: fileContentResponse.ExtraFields.ProviderResponseHeaders,
+		},
+	}
+	if len(parseErrors) > 0 {
+		response.ExtraFields.ParseErrors = parseErrors
+	}
+	return response, nil
 }
 
 // FileUpload uploads a file to GigaChat.

@@ -286,6 +286,15 @@ func toBifrostGigaChatBatchProviderExtraFields(batch GigaChatBatch) map[string]i
 	if batch.ResultFileID != nil && strings.TrimSpace(*batch.ResultFileID) != "" {
 		fields["gigachat_result_file_id"] = strings.TrimSpace(*batch.ResultFileID)
 	}
+	if batch.OutputFileID != nil && strings.TrimSpace(*batch.OutputFileID) != "" {
+		fields["gigachat_output_file_id"] = strings.TrimSpace(*batch.OutputFileID)
+	}
+	if batch.InputFileID != nil && strings.TrimSpace(*batch.InputFileID) != "" {
+		fields["gigachat_input_file_id"] = strings.TrimSpace(*batch.InputFileID)
+	}
+	if batch.ErrorFileID != nil && strings.TrimSpace(*batch.ErrorFileID) != "" {
+		fields["gigachat_error_file_id"] = strings.TrimSpace(*batch.ErrorFileID)
+	}
 	if len(fields) == 0 {
 		return nil
 	}
@@ -333,16 +342,17 @@ func toBifrostGigaChatBatchCreateResponse(providerName schemas.ModelProvider, ba
 	}
 
 	response := &schemas.BifrostBatchCreateResponse{
-		ID:               batch.ID,
-		Object:           toBifrostGigaChatBatchObject(batch.Object),
-		Endpoint:         endpoint,
-		InputFileID:      inputFileID,
-		CompletionWindow: completionWindow,
-		Status:           toBifrostGigaChatBatchStatus(batch.Status),
-		RequestCounts:    toBifrostGigaChatBatchRequestCounts(batch.RequestCounts),
-		CreatedAt:        batch.CreatedAt,
-		OutputFileID:     cleanGigaChatBatchFileID(batch.OutputFileID),
-		ErrorFileID:      cleanGigaChatBatchFileID(batch.ErrorFileID),
+		ID:                  batch.ID,
+		Object:              toBifrostGigaChatBatchObject(batch.Object),
+		Endpoint:            endpoint,
+		InputFileID:         inputFileID,
+		CompletionWindow:    completionWindow,
+		Status:              toBifrostGigaChatBatchStatus(batch.Status),
+		RequestCounts:       toBifrostGigaChatBatchRequestCounts(batch.RequestCounts),
+		CreatedAt:           batch.CreatedAt,
+		OutputFileID:        toBifrostGigaChatBatchOutputFileID(batch),
+		ErrorFileID:         cleanGigaChatBatchFileID(batch.ErrorFileID),
+		ProviderExtraFields: toBifrostGigaChatBatchProviderExtraFields(batch),
 		ExtraFields: schemas.BifrostResponseExtraFields{
 			Provider: providerName,
 			Latency:  latency.Milliseconds(),
@@ -385,17 +395,18 @@ func toBifrostGigaChatBatchRetrieveResponse(providerName schemas.ModelProvider, 
 	}
 
 	return &schemas.BifrostBatchRetrieveResponse{
-		ID:               batch.ID,
-		Object:           toBifrostGigaChatBatchObject(batch.Object),
-		Endpoint:         endpoint,
-		InputFileID:      inputFileID,
-		CompletionWindow: batch.CompletionWindow,
-		Status:           toBifrostGigaChatBatchStatus(batch.Status),
-		RequestCounts:    toBifrostGigaChatBatchRequestCounts(batch.RequestCounts),
-		CreatedAt:        batch.CreatedAt,
-		CompletedAt:      batch.CompletedAt,
-		OutputFileID:     cleanGigaChatBatchFileID(batch.OutputFileID),
-		ErrorFileID:      cleanGigaChatBatchFileID(batch.ErrorFileID),
+		ID:                  batch.ID,
+		Object:              toBifrostGigaChatBatchObject(batch.Object),
+		Endpoint:            endpoint,
+		InputFileID:         inputFileID,
+		CompletionWindow:    batch.CompletionWindow,
+		Status:              toBifrostGigaChatBatchStatus(batch.Status),
+		RequestCounts:       toBifrostGigaChatBatchRequestCounts(batch.RequestCounts),
+		CreatedAt:           batch.CreatedAt,
+		CompletedAt:         batch.CompletedAt,
+		OutputFileID:        toBifrostGigaChatBatchOutputFileID(batch),
+		ErrorFileID:         cleanGigaChatBatchFileID(batch.ErrorFileID),
+		ProviderExtraFields: toBifrostGigaChatBatchProviderExtraFields(batch),
 		ExtraFields: schemas.BifrostResponseExtraFields{
 			Provider: providerName,
 			Latency:  latency.Milliseconds(),
@@ -441,6 +452,70 @@ func cleanGigaChatBatchFileID(fileID *string) *string {
 		return nil
 	}
 	return &trimmed
+}
+
+func toBifrostGigaChatBatchOutputFileID(batch GigaChatBatch) *string {
+	if outputFileID := cleanGigaChatBatchFileID(batch.OutputFileID); outputFileID != nil {
+		return outputFileID
+	}
+	return cleanGigaChatBatchFileID(batch.ResultFileID)
+}
+
+func (provider *GigaChatProvider) readGigaChatBatchOutputFile(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostBatchResultsRequest, fileID string) (*schemas.BifrostFileContentResponse, *schemas.BifrostError) {
+	fileRequest := &schemas.BifrostFileContentRequest{
+		Provider: provider.GetProviderKey(),
+		Model:    request.Model,
+		FileID:   strings.TrimSpace(fileID),
+	}
+	var lastErr *schemas.BifrostError
+	for _, key := range keys {
+		response, bifrostErr := provider.fileContentWithRefresh(ctx, key, fileRequest, false)
+		if isGigaChatUnauthorizedError(bifrostErr) {
+			response, bifrostErr = provider.fileContentWithRefresh(ctx, key, fileRequest, true)
+		}
+		if bifrostErr == nil {
+			return response, nil
+		}
+		lastErr = bifrostErr
+	}
+	return nil, lastErr
+}
+
+func parseGigaChatBatchResultsJSONL(content []byte, logger schemas.Logger) ([]schemas.BatchResultItem, []schemas.BatchError) {
+	results := make([]schemas.BatchResultItem, 0)
+	parseResult := providerUtils.ParseJSONL(content, func(line []byte) error {
+		var resultRow GigaChatBatchResultRow
+		if err := json.Unmarshal(line, &resultRow); err != nil {
+			if logger != nil {
+				logger.Warn("failed to parse GigaChat batch result line: %v", err)
+			}
+			return err
+		}
+
+		result := schemas.BatchResultItem{
+			CustomID: strings.TrimSpace(resultRow.CustomID),
+			Response: resultRow.Response,
+			Result:   resultRow.Result,
+			Error:    resultRow.Error,
+		}
+		if result.CustomID == "" {
+			result.CustomID = strings.TrimSpace(resultRow.ID)
+		}
+		results = append(results, result)
+		return nil
+	})
+	return results, parseResult.Errors
+}
+
+func cloneGigaChatBatchProviderExtraFields(fields map[string]interface{}) map[string]interface{} {
+	if len(fields) == 0 {
+		return nil
+	}
+	cloned := make(map[string]interface{}, len(fields))
+	for key, value := range fields {
+		cloned[key] = value
+	}
+	return cloned
 }
 
 func withGigaChatQuery(path string, values url.Values) string {
