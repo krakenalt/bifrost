@@ -422,6 +422,11 @@ func (provider *GigaChatProvider) responsesWithRefresh(ctx *schemas.BifrostConte
 	if request == nil {
 		return nil, providerUtils.NewBifrostOperationError("responses request is nil", nil)
 	}
+	preparedRequest, bifrostErr := provider.prepareGigaChatResponsesAttachments(ctx, key, request)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+	request = preparedRequest
 
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
@@ -519,6 +524,11 @@ func (provider *GigaChatProvider) responsesStreamWithRefresh(
 	if request == nil {
 		return nil, providerUtils.NewBifrostOperationError("responses stream request is nil", nil)
 	}
+	preparedRequest, bifrostErr := provider.prepareGigaChatResponsesAttachments(ctx, key, request)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+	request = preparedRequest
 	providerUtils.SetStreamIdleTimeoutIfEmpty(ctx, provider.networkConfig.StreamIdleTimeoutInSeconds)
 
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(

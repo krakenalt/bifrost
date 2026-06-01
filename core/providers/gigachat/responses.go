@@ -872,7 +872,11 @@ func toGigaChatResponsesContentParts(content *schemas.ResponsesMessageContent) (
 			}
 			parts = append(parts, GigaChatResponsesContentPart{Files: []GigaChatResponsesContentFile{*file}})
 		case schemas.ResponsesInputMessageContentBlockTypeImage:
-			return nil, fmt.Errorf("content block %d: input_image is not supported by GigaChat Responses request conversion yet", index)
+			file, err := toGigaChatResponsesContentImage(index, block)
+			if err != nil {
+				return nil, err
+			}
+			parts = append(parts, GigaChatResponsesContentPart{Files: []GigaChatResponsesContentFile{*file}})
 		case schemas.ResponsesInputMessageContentBlockTypeAudio:
 			return nil, fmt.Errorf("content block %d: input_audio is not supported by GigaChat Responses request conversion yet", index)
 		default:
@@ -880,6 +884,23 @@ func toGigaChatResponsesContentParts(content *schemas.ResponsesMessageContent) (
 		}
 	}
 	return parts, nil
+}
+
+func toGigaChatResponsesContentImage(index int, block schemas.ResponsesMessageContentBlock) (*GigaChatResponsesContentFile, error) {
+	if block.ResponsesInputMessageContentBlockImage != nil &&
+		block.ResponsesInputMessageContentBlockImage.ImageURL != nil &&
+		strings.TrimSpace(*block.ResponsesInputMessageContentBlockImage.ImageURL) != "" {
+		return nil, fmt.Errorf("content block %d: GigaChat Responses supports pre-uploaded file_id references for input_image; upload image_url with the Files API before calling Responses", index)
+	}
+
+	fileID := ""
+	if block.FileID != nil {
+		fileID = strings.TrimSpace(*block.FileID)
+	}
+	if fileID == "" {
+		return nil, fmt.Errorf("content block %d: input_image requires file_id; upload image_url with the Files API before calling Responses", index)
+	}
+	return &GigaChatResponsesContentFile{ID: fileID}, nil
 }
 
 func toGigaChatResponsesContentFile(index int, block schemas.ResponsesMessageContentBlock) (*GigaChatResponsesContentFile, error) {
