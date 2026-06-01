@@ -494,29 +494,6 @@ func (t *ChatTool) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	*t = ChatTool(temp)
-	if t.Type == ChatToolTypeFunction && t.Function == nil {
-		var functionShape struct {
-			Name        *string                 `json:"name,omitempty"`
-			Description *string                 `json:"description,omitempty"`
-			Parameters  *ToolFunctionParameters `json:"parameters,omitempty"`
-			Strict      *bool                   `json:"strict,omitempty"`
-		}
-		if err := Unmarshal(data, &functionShape); err != nil {
-			return err
-		}
-		if functionShape.Name != nil || functionShape.Description != nil || functionShape.Parameters != nil || functionShape.Strict != nil {
-			name := ""
-			if functionShape.Name != nil {
-				name = *functionShape.Name
-			}
-			t.Function = &ChatToolFunction{
-				Name:        name,
-				Description: functionShape.Description,
-				Parameters:  functionShape.Parameters,
-				Strict:      functionShape.Strict,
-			}
-		}
-	}
 	t.normalizeShape()
 	return nil
 }
