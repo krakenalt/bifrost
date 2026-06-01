@@ -156,6 +156,35 @@ type GigaChatModel struct {
 	Type    string `json:"type,omitempty"`
 }
 
+// # FILES TYPES
+
+// GigaChatUploadedFile is a file metadata object returned by GigaChat.
+type GigaChatUploadedFile struct {
+	ID           string  `json:"id"`
+	Object       string  `json:"object,omitempty"`
+	Bytes        int64   `json:"bytes"`
+	CreatedAt    int64   `json:"created_at"`
+	Filename     string  `json:"filename"`
+	Purpose      string  `json:"purpose"`
+	AccessPolicy *string `json:"access_policy,omitempty"`
+}
+
+// GigaChatUploadedFiles is a list wrapper for GigaChat file metadata.
+type GigaChatUploadedFiles struct {
+	Data []GigaChatUploadedFile `json:"data"`
+}
+
+// GigaChatDeletedFile is returned by GigaChat after deleting a file.
+type GigaChatDeletedFile struct {
+	ID      string `json:"id"`
+	Deleted bool   `json:"deleted"`
+}
+
+// GigaChatFileContent contains base64-encoded file content.
+type GigaChatFileContent struct {
+	Content string `json:"content"`
+}
+
 // # EMBEDDING TYPES
 
 // GigaChatEmbeddingRequest is the v1 embeddings request body.
