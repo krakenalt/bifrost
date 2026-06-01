@@ -59,6 +59,7 @@ func testGigaChatResponsesStream(t *testing.T) {
 	t.Run("TextDeltasAndUsage", testGigaChatResponsesStreamTextDeltasAndUsage)
 	t.Run("ReasoningDeltas", testGigaChatResponsesStreamReasoningDeltas)
 	t.Run("ToolCallDeltas", testGigaChatResponsesStreamToolCallDeltas)
+	t.Run("ClosesOnMessageDoneEvent", testGigaChatResponsesStreamClosesOnMessageDoneEvent)
 	t.Run("MapsErrorEvents", testGigaChatResponsesStreamMapsErrorEvents)
 	t.Run("HandlesContextCancellation", testGigaChatResponsesStreamHandlesContextCancellation)
 }
@@ -1021,6 +1022,72 @@ func testGigaChatResponsesStreamToolCallDeltas(t *testing.T) {
 	}
 	finalResponse := responses[len(responses)-1]
 	if finalResponse.Response == nil || finalResponse.Response.Usage == nil || finalResponse.Response.Usage.TotalTokens != 15 {
+		t.Fatalf("final usage mismatch: %#v", finalResponse.Response)
+	}
+}
+
+func testGigaChatResponsesStreamClosesOnMessageDoneEvent(t *testing.T) {
+	t.Parallel()
+
+	releaseServer := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/v2/chat/completions" {
+			t.Fatalf("unexpected path: %s", request.URL.Path)
+		}
+		assertGigaChatResponsesStreamRequestBody(t, request)
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			t.Fatal("response writer does not support flushing")
+		}
+		_, _ = w.Write([]byte("event: response.message.delta\ndata: {\"message_id\":\"resp-done-event\",\"messages\":[{\"role\":\"assistant\",\"content\":[{\"text\":\"Привет\"}]}],\"created_at\":1780315871,\"model\":\"GigaChat-2-Reasoning:2.0.29.05\"}\n\n"))
+		flusher.Flush()
+		_, _ = w.Write([]byte("event: response.message.done\ndata: {\"model\":\"GigaChat-2-Reasoning:2.0.29.05\",\"created_at\":1780315871,\"finish_reason\":\"stop\",\"usage\":{\"input_tokens\":29,\"input_tokens_details\":{\"prompt_tokens\":29,\"cached_tokens\":3},\"output_tokens\":109,\"total_tokens\":138}}\n\n"))
+		flusher.Flush()
+		select {
+		case <-request.Context().Done():
+		case <-releaseServer:
+		}
+	}))
+	defer server.Close()
+	defer close(releaseServer)
+
+	provider := newTestGigaChatChatProvider(t, server.URL)
+	stream, bifrostErr := provider.ResponsesStream(testBifrostContext(), testGigaChatPostHookRunner, nil, testGigaChatAccessTokenKey("responses-stream-token"), testGigaChatResponsesExecutionRequest())
+	if bifrostErr != nil {
+		t.Fatalf("ResponsesStream returned error: %v", bifrostErr)
+	}
+
+	chunksDone := make(chan []*schemas.BifrostStreamChunk, 1)
+	go func() {
+		chunks := make([]*schemas.BifrostStreamChunk, 0)
+		for chunk := range stream {
+			chunks = append(chunks, chunk)
+		}
+		chunksDone <- chunks
+	}()
+
+	var chunks []*schemas.BifrostStreamChunk
+	select {
+	case chunks = <-chunksDone:
+	case <-time.After(time.Second):
+		t.Fatal("responses stream did not close after response.message.done")
+	}
+
+	responses := collectGigaChatResponsesStreamResponses(t, chunks)
+	assertGigaChatResponsesStreamTypes(t, responses, []schemas.ResponsesStreamResponseType{
+		schemas.ResponsesStreamResponseTypeCreated,
+		schemas.ResponsesStreamResponseTypeInProgress,
+		schemas.ResponsesStreamResponseTypeOutputItemAdded,
+		schemas.ResponsesStreamResponseTypeContentPartAdded,
+		schemas.ResponsesStreamResponseTypeOutputTextDelta,
+		schemas.ResponsesStreamResponseTypeOutputTextDone,
+		schemas.ResponsesStreamResponseTypeContentPartDone,
+		schemas.ResponsesStreamResponseTypeOutputItemDone,
+		schemas.ResponsesStreamResponseTypeCompleted,
+	})
+	finalResponse := responses[len(responses)-1]
+	if finalResponse.Response == nil || finalResponse.Response.Usage == nil || finalResponse.Response.Usage.TotalTokens != 138 {
 		t.Fatalf("final usage mismatch: %#v", finalResponse.Response)
 	}
 }

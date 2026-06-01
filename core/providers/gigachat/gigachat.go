@@ -612,7 +612,7 @@ func (provider *GigaChatProvider) responsesStreamWithRefresh(
 			return
 		}
 
-		sseReader := providerUtils.GetSSEDataReader(ctx, reader)
+		sseReader := providerUtils.GetSSEEventReader(ctx, reader)
 		streamState := schemas.AcquireChatToResponsesStreamState()
 		defer schemas.ReleaseChatToResponsesStreamState(streamState)
 
@@ -620,13 +620,14 @@ func (provider *GigaChatProvider) responsesStreamWithRefresh(
 		usageSeen := false
 		lastChunkTime := startTime
 		var pendingFinalEvent *schemas.BifrostResponsesStreamResponse
+		streamEndedSemantically := false
 
 		for {
 			if ctx.Err() != nil {
 				return
 			}
 
-			data, readErr := sseReader.ReadDataLine()
+			eventType, data, readErr := sseReader.ReadEvent()
 			if readErr != nil {
 				if ctx.Err() != nil {
 					return
@@ -640,6 +641,17 @@ func (provider *GigaChatProvider) responsesStreamWithRefresh(
 					return
 				}
 				break
+			}
+			if isGigaChatResponsesStreamDoneMarker(data) {
+				streamEndedSemantically = true
+				break
+			}
+			if len(data) == 0 {
+				if isGigaChatResponsesStreamTerminalEvent(eventType, nil) {
+					streamEndedSemantically = true
+					break
+				}
+				continue
 			}
 
 			if bifrostErr := parseGigaChatStreamError(data, providerName); bifrostErr != nil {
@@ -681,6 +693,10 @@ func (provider *GigaChatProvider) responsesStreamWithRefresh(
 				lastChunkTime = time.Now()
 				providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, response, nil, nil, nil), responseChan, postHookSpanFinalizer)
 			}
+			if isGigaChatResponsesStreamTerminalEvent(eventType, &gigaChatResponse) {
+				streamEndedSemantically = true
+				break
+			}
 		}
 
 		if pendingFinalEvent != nil {
@@ -694,9 +710,60 @@ func (provider *GigaChatProvider) responsesStreamWithRefresh(
 			ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 			providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, pendingFinalEvent, nil, nil, nil), responseChan, postHookSpanFinalizer)
 		}
+		if streamEndedSemantically {
+			closeGigaChatSemanticStream(ctx, resp.BodyStream())
+		}
 	}()
 
 	return responseChan, nil
+}
+
+type gigaChatStreamCloserWithError interface {
+	CloseWithError(error) error
+}
+
+func isGigaChatResponsesStreamDoneMarker(data []byte) bool {
+	return strings.TrimSpace(string(data)) == "[DONE]"
+}
+
+func isGigaChatResponsesStreamTerminalEvent(eventType string, response *GigaChatResponsesResponse) bool {
+	if isGigaChatResponsesStreamTerminalEventName(eventType) {
+		return true
+	}
+	if response == nil {
+		return false
+	}
+	if response.Event != nil && isGigaChatResponsesStreamTerminalEventName(*response.Event) {
+		return true
+	}
+	return response.FinishReason != nil && len(response.Messages) == 0 && len(response.Choices) == 0
+}
+
+func isGigaChatResponsesStreamTerminalEventName(eventType string) bool {
+	switch strings.ToLower(strings.TrimSpace(eventType)) {
+	case "done", "response.done", "response.completed", "response.message.done":
+		return true
+	default:
+		return false
+	}
+}
+
+func closeGigaChatSemanticStream(ctx *schemas.BifrostContext, bodyStream io.Reader) {
+	if bodyStream == nil {
+		return
+	}
+	if closed, ok := ctx.Value(schemas.BifrostContextKeyConnectionClosed).(bool); ok && closed {
+		return
+	}
+	if closer, ok := bodyStream.(io.Closer); ok {
+		ctx.SetValue(schemas.BifrostContextKeyConnectionClosed, true)
+		_ = closer.Close()
+		return
+	}
+	if closer, ok := bodyStream.(gigaChatStreamCloserWithError); ok {
+		ctx.SetValue(schemas.BifrostContextKeyConnectionClosed, true)
+		_ = closer.CloseWithError(io.EOF)
+	}
 }
 
 // ListModels performs a v1 models request to GigaChat.
