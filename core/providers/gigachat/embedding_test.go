@@ -1,8 +1,11 @@
 package gigachat
 
 import (
+	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -17,6 +20,8 @@ func testGigaChatEmbedding(t *testing.T) {
 
 	t.Run("ConverterMapsStringInput", testGigaChatEmbeddingConverterMapsStringInput)
 	t.Run("ConverterMapsArrayInput", testGigaChatEmbeddingConverterMapsArrayInput)
+	t.Run("ConverterAcceptsEncodingFormat", testGigaChatEmbeddingConverterAcceptsEncodingFormat)
+	t.Run("ResponseAppliesBase64EncodingFormat", testGigaChatEmbeddingResponseAppliesBase64EncodingFormat)
 	t.Run("RejectsUnsupportedParams", testGigaChatEmbeddingRejectsUnsupportedParams)
 	t.Run("ExecutesWithOAuthToken", testGigaChatEmbeddingExecutesWithOAuthToken)
 	t.Run("MapsProviderErrors", testGigaChatEmbeddingMapsProviderErrors)
@@ -74,6 +79,67 @@ func testGigaChatEmbeddingConverterMapsArrayInput(t *testing.T) {
 	}
 }
 
+func testGigaChatEmbeddingConverterAcceptsEncodingFormat(t *testing.T) {
+	t.Parallel()
+
+	encodingFormat := "base64"
+	request := testGigaChatEmbeddingRequest()
+	request.Params = &schemas.EmbeddingParameters{
+		EncodingFormat: &encodingFormat,
+	}
+
+	gigaChatReq, err := ToGigaChatEmbeddingRequest(request)
+	if err != nil {
+		t.Fatalf("ToGigaChatEmbeddingRequest returned error: %v", err)
+	}
+
+	body, err := json.Marshal(gigaChatReq)
+	if err != nil {
+		t.Fatalf("failed to marshal request: %v", err)
+	}
+	if strings.Contains(string(body), "encoding_format") {
+		t.Fatalf("GigaChat request body should not include encoding_format, got %s", body)
+	}
+}
+
+func testGigaChatEmbeddingResponseAppliesBase64EncodingFormat(t *testing.T) {
+	t.Parallel()
+
+	encodingFormat := "base64"
+	response := ToBifrostEmbeddingResponse(schemas.GigaChat, &GigaChatEmbeddingResponse{
+		Object: "list",
+		Model:  "Embeddings",
+		Data: []GigaChatEmbeddingData{{
+			Object:    "embedding",
+			Index:     0,
+			Embedding: []float64{0.1, 0.2},
+		}},
+	})
+
+	if err := applyGigaChatEmbeddingEncodingFormat(response, &schemas.EmbeddingParameters{EncodingFormat: &encodingFormat}); err != nil {
+		t.Fatalf("applyGigaChatEmbeddingEncodingFormat returned error: %v", err)
+	}
+	if response.Data[0].Embedding.EmbeddingArray != nil {
+		t.Fatalf("expected base64 embedding string, got float array %#v", response.Data[0].Embedding.EmbeddingArray)
+	}
+	if response.Data[0].Embedding.EmbeddingStr == nil {
+		t.Fatal("expected base64 embedding string, got nil")
+	}
+
+	decoded, err := base64.StdEncoding.DecodeString(*response.Data[0].Embedding.EmbeddingStr)
+	if err != nil {
+		t.Fatalf("failed to decode base64 embedding: %v", err)
+	}
+	if len(decoded) != 8 {
+		t.Fatalf("decoded embedding byte length mismatch: got %d, want 8", len(decoded))
+	}
+	gotFirst := math.Float32frombits(binary.LittleEndian.Uint32(decoded[0:4]))
+	gotSecond := math.Float32frombits(binary.LittleEndian.Uint32(decoded[4:8]))
+	if gotFirst != float32(0.1) || gotSecond != float32(0.2) {
+		t.Fatalf("decoded embedding mismatch: got [%v %v]", gotFirst, gotSecond)
+	}
+}
+
 func testGigaChatEmbeddingRejectsUnsupportedParams(t *testing.T) {
 	t.Parallel()
 
@@ -92,10 +158,13 @@ func testGigaChatEmbeddingRejectsUnsupportedParams(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected unsupported params error, got nil")
 	}
-	for _, want := range []string{"encoding_format", "dimensions", "user"} {
+	for _, want := range []string{"dimensions", "user"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Fatalf("error %q missing unsupported param %q", err.Error(), want)
 		}
+	}
+	if strings.Contains(err.Error(), "encoding_format") {
+		t.Fatalf("encoding_format should be accepted for OpenAI SDK compatibility, got %q", err.Error())
 	}
 
 	_, err = ToGigaChatEmbeddingRequest(&schemas.BifrostEmbeddingRequest{

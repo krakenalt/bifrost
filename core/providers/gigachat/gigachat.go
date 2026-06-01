@@ -388,6 +388,9 @@ func (provider *GigaChatProvider) embeddingWithRefresh(ctx *schemas.BifrostConte
 	if response == nil {
 		return nil, newGigaChatProviderResponseError("GigaChat embeddings response is empty", nil)
 	}
+	if err := applyGigaChatEmbeddingEncodingFormat(response, request.Params); err != nil {
+		return nil, enrichGigaChatError(ctx, newGigaChatProviderResponseError("failed to encode GigaChat embeddings response", err), jsonData, responseBody, sendBackRawRequest, sendBackRawResponse)
+	}
 	response.BackfillParams(request)
 	response.ExtraFields.Latency = latency.Milliseconds()
 	response.ExtraFields.ProviderResponseHeaders = providerResponseHeaders

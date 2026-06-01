@@ -1,7 +1,10 @@
 package gigachat
 
 import (
+	"encoding/base64"
+	"encoding/binary"
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 
@@ -23,6 +26,9 @@ func ToGigaChatEmbeddingRequest(bifrostReq *schemas.BifrostEmbeddingRequest) (*G
 		return nil, fmt.Errorf("GigaChat embeddings support only string or array-of-string input")
 	}
 
+	if err := validateGigaChatEmbeddingEncodingFormat(bifrostReq.Params); err != nil {
+		return nil, err
+	}
 	if unsupportedParams := unsupportedGigaChatEmbeddingParams(bifrostReq.Params); len(unsupportedParams) > 0 {
 		return nil, fmt.Errorf("GigaChat embeddings do not support parameter(s): %s", strings.Join(unsupportedParams, ", "))
 	}
@@ -82,15 +88,59 @@ func ToBifrostEmbeddingResponse(providerName schemas.ModelProvider, response *Gi
 	return bifrostResponse
 }
 
+func validateGigaChatEmbeddingEncodingFormat(params *schemas.EmbeddingParameters) error {
+	format := normalizedGigaChatEmbeddingEncodingFormat(params)
+	switch format {
+	case "", "float", "base64":
+		return nil
+	default:
+		return fmt.Errorf("GigaChat embeddings do not support encoding_format %q", *params.EncodingFormat)
+	}
+}
+
+func applyGigaChatEmbeddingEncodingFormat(response *schemas.BifrostEmbeddingResponse, params *schemas.EmbeddingParameters) error {
+	if normalizedGigaChatEmbeddingEncodingFormat(params) != "base64" {
+		return nil
+	}
+	if response == nil {
+		return nil
+	}
+
+	for i := range response.Data {
+		if response.Data[i].Embedding.EmbeddingStr != nil {
+			continue
+		}
+		if response.Data[i].Embedding.EmbeddingArray == nil {
+			return fmt.Errorf("GigaChat embeddings cannot encode non-float embedding at index %d as base64", i)
+		}
+
+		encoded := encodeGigaChatEmbeddingFloat32Base64(response.Data[i].Embedding.EmbeddingArray)
+		response.Data[i].Embedding = schemas.EmbeddingStruct{EmbeddingStr: &encoded}
+	}
+	return nil
+}
+
+func normalizedGigaChatEmbeddingEncodingFormat(params *schemas.EmbeddingParameters) string {
+	if params == nil || params.EncodingFormat == nil {
+		return ""
+	}
+	return strings.ToLower(strings.TrimSpace(*params.EncodingFormat))
+}
+
+func encodeGigaChatEmbeddingFloat32Base64(values []float64) string {
+	buf := make([]byte, len(values)*4)
+	for i, value := range values {
+		binary.LittleEndian.PutUint32(buf[i*4:], math.Float32bits(float32(value)))
+	}
+	return base64.StdEncoding.EncodeToString(buf)
+}
+
 func unsupportedGigaChatEmbeddingParams(params *schemas.EmbeddingParameters) []string {
 	if params == nil {
 		return nil
 	}
 
 	unsupported := make([]string, 0)
-	if params.EncodingFormat != nil {
-		unsupported = append(unsupported, "encoding_format")
-	}
 	if params.Dimensions != nil {
 		unsupported = append(unsupported, "dimensions")
 	}
