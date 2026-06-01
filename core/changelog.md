@@ -1,3 +1,4 @@
+- test: expand gated GigaChat live integration coverage
 - feat: map GigaChat batch output files and results content
 - feat: align GigaChat Responses file input mapping
 - fix: close GigaChat Responses streams on message done events
