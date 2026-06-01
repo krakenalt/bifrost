@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	schemas "github.com/maximhq/bifrost/core/schemas"
@@ -139,6 +140,7 @@ func TestGigaChatBatchesHTTP(t *testing.T) {
 	t.Parallel()
 
 	t.Run("CreateTransformsFileRows", testGigaChatBatchCreateTransformsFileRows)
+	t.Run("CreateUsesKeyBaseURLAndRefreshesTokenAfterUnauthorized", testGigaChatBatchCreateUsesKeyBaseURLAndRefreshesTokenAfterUnauthorized)
 	t.Run("ListParsesWrapper", testGigaChatBatchListParsesWrapper)
 	t.Run("RetrieveParsesSingleObject", testGigaChatBatchRetrieveParsesSingleObject)
 	t.Run("RetrieveMapsResultFileID", testGigaChatBatchRetrieveMapsResultFileID)
@@ -360,6 +362,101 @@ func testGigaChatBatchCreateTransformsFileRows(t *testing.T) {
 	}
 	if response.ExtraFields.ProviderResponseHeaders["X-Request-Id"] != "batch-create-request-id" {
 		t.Fatalf("provider headers mismatch: %#v", response.ExtraFields.ProviderResponseHeaders)
+	}
+}
+
+func testGigaChatBatchCreateUsesKeyBaseURLAndRefreshesTokenAfterUnauthorized(t *testing.T) {
+	t.Parallel()
+
+	networkServer := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, request *http.Request) {
+		t.Fatalf("network base_url server should not be used, got %s", request.URL.Path)
+	}))
+	defer networkServer.Close()
+
+	var tokenRequests atomic.Int32
+	var batchRequests atomic.Int32
+	keyServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/oauth":
+			tokenIndex := tokenRequests.Add(1)
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"access_token":"batch-token-` + formatInt32(tokenIndex) + `","expires_at":1893456000}`))
+		case "/custom-api/v1/batches":
+			batchIndex := batchRequests.Add(1)
+			wantAuthorization := "Bearer batch-token-" + formatInt32(batchIndex)
+			if got := request.Header.Get("Authorization"); got != wantAuthorization {
+				t.Fatalf("authorization header mismatch on request %d: got %q, want %q", batchIndex, got, wantAuthorization)
+			}
+			if got := request.Header.Get(gigaChatUserAgentHeader); got != gigaChatUserAgent {
+				t.Fatalf("user-agent mismatch: got %q", got)
+			}
+			if request.Method != http.MethodPost {
+				t.Fatalf("method mismatch: got %s, want POST", request.Method)
+			}
+			if got := request.URL.Query().Get("method"); got != string(GigaChatBatchMethodChatCompletions) {
+				t.Fatalf("method query mismatch: got %q", got)
+			}
+			if got := request.Header.Get("Content-Type"); got != "application/octet-stream" {
+				t.Fatalf("content type mismatch: got %q", got)
+			}
+			if batchIndex == 1 {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusUnauthorized)
+				_, _ = w.Write([]byte(`{"status":401,"message":"expired token"}`))
+				return
+			}
+
+			body, err := io.ReadAll(request.Body)
+			if err != nil {
+				t.Fatalf("ReadAll returned error: %v", err)
+			}
+			row := decodeGigaChatBatchTestRow(t, body)
+			if row.ID != "inline-1" {
+				t.Fatalf("row id mismatch: got %q", row.ID)
+			}
+
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"id":"batch-refreshed","object":"batch","method":"chat_completions","status":"created","completion_window":"24h","request_counts":{"total":1}}`))
+		default:
+			t.Fatalf("unexpected path: %s", request.URL.Path)
+		}
+	}))
+	defer keyServer.Close()
+
+	provider := newTestGigaChatChatProvider(t, networkServer.URL)
+	key := schemas.Key{
+		GigaChatKeyConfig: &schemas.GigaChatKeyConfig{
+			Credentials: schemas.NewEnvVar("test-credentials"),
+			AuthURL:     keyServer.URL + "/oauth",
+			BaseURL:     keyServer.URL + "/custom-api",
+		},
+	}
+
+	response, bifrostErr := provider.BatchCreate(testBifrostContext(), key, &schemas.BifrostBatchCreateRequest{
+		Provider:         schemas.GigaChat,
+		Endpoint:         schemas.BatchEndpointChatCompletions,
+		CompletionWindow: "24h",
+		Requests: []schemas.BatchRequestItem{{
+			CustomID: "inline-1",
+			Body: map[string]interface{}{
+				"model": "GigaChat",
+				"messages": []map[string]string{
+					{"role": "user", "content": "Hello"},
+				},
+			},
+		}},
+	})
+	if bifrostErr != nil {
+		t.Fatalf("BatchCreate returned error: %v", bifrostErr)
+	}
+	if response.ID != "batch-refreshed" || response.Status != schemas.BatchStatusValidating {
+		t.Fatalf("unexpected response: %#v", response)
+	}
+	if tokenRequests.Load() != 2 {
+		t.Fatalf("token request count mismatch: got %d, want 2", tokenRequests.Load())
+	}
+	if batchRequests.Load() != 2 {
+		t.Fatalf("batch request count mismatch: got %d, want 2", batchRequests.Load())
 	}
 }
 

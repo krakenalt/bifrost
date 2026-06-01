@@ -142,6 +142,7 @@ func TestGigaChatFilesHTTP(t *testing.T) {
 	t.Parallel()
 
 	t.Run("UploadMultipart", testGigaChatFileUploadMultipart)
+	t.Run("ListUsesKeyBaseURLAndAuthHeaders", testGigaChatFileListUsesKeyBaseURLAndAuthHeaders)
 	t.Run("ListRetrieveDelete", testGigaChatFileListRetrieveDelete)
 	t.Run("ContentRawBytes", testGigaChatFileContentRawBytes)
 	t.Run("ContentBase64Wrapper", testGigaChatFileContentBase64Wrapper)
@@ -217,6 +218,50 @@ func testGigaChatFileUploadMultipart(t *testing.T) {
 	}
 	if response.ExtraFields.ProviderResponseHeaders["X-Request-Id"] != "file-upload-request-id" {
 		t.Fatalf("provider headers mismatch: %#v", response.ExtraFields.ProviderResponseHeaders)
+	}
+}
+
+func testGigaChatFileListUsesKeyBaseURLAndAuthHeaders(t *testing.T) {
+	t.Parallel()
+
+	networkServer := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, request *http.Request) {
+		t.Fatalf("network base_url server should not be used, got %s", request.URL.Path)
+	}))
+	defer networkServer.Close()
+
+	keyServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/custom-api/v1/files" {
+			t.Fatalf("path mismatch: got %s", request.URL.Path)
+		}
+		if request.Method != http.MethodGet {
+			t.Fatalf("method mismatch: got %s, want GET", request.Method)
+		}
+		if got := request.Header.Get("Authorization"); got != "Bearer key-base-url-token" {
+			t.Fatalf("authorization header mismatch: got %q", got)
+		}
+		if got := request.Header.Get(gigaChatUserAgentHeader); got != gigaChatUserAgent {
+			t.Fatalf("user-agent mismatch: got %q", got)
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[]}`))
+	}))
+	defer keyServer.Close()
+
+	provider := newTestGigaChatChatProvider(t, networkServer.URL)
+	key := schemas.Key{
+		GigaChatKeyConfig: &schemas.GigaChatKeyConfig{
+			AccessToken: schemas.NewEnvVar("key-base-url-token"),
+			BaseURL:     keyServer.URL + "/custom-api",
+		},
+	}
+
+	response, bifrostErr := provider.FileList(testBifrostContext(), []schemas.Key{key}, &schemas.BifrostFileListRequest{Provider: schemas.GigaChat})
+	if bifrostErr != nil {
+		t.Fatalf("FileList returned error: %v", bifrostErr)
+	}
+	if response.Object != "list" || len(response.Data) != 0 {
+		t.Fatalf("unexpected list response: %#v", response)
 	}
 }
 
