@@ -371,10 +371,12 @@ func testGigaChatToolsResponsesToolChoiceVariants(t *testing.T) {
 
 	toolName := "get_weather"
 	tests := []struct {
-		name       string
-		choice     *schemas.ResponsesToolChoice
-		wantMode   string
-		wantForced string
+		name         string
+		choice       *schemas.ResponsesToolChoice
+		mutate       func(*schemas.BifrostResponsesRequest)
+		wantMode     string
+		wantFunction string
+		wantTool     string
 	}{
 		{
 			name:     "StringAuto",
@@ -406,7 +408,98 @@ func testGigaChatToolsResponsesToolChoiceVariants(t *testing.T) {
 				Type: schemas.ResponsesToolChoiceTypeFunction,
 				Name: &toolName,
 			}},
-			wantForced: toolName,
+			wantFunction: toolName,
+		},
+		{
+			name: "StructReservedFunction",
+			choice: &schemas.ResponsesToolChoice{ResponsesToolChoiceStruct: &schemas.ResponsesToolChoiceStruct{
+				Type: schemas.ResponsesToolChoiceTypeFunction,
+				Name: schemas.Ptr("web_search"),
+			}},
+			mutate: func(request *schemas.BifrostResponsesRequest) {
+				request.Params.Tools[0].Name = schemas.Ptr("web_search")
+			},
+			wantFunction: "__bifrost_gigachat_user_web_search",
+		},
+		{
+			name: "StringAutoWithBuiltInOnly",
+			choice: &schemas.ResponsesToolChoice{
+				ResponsesToolChoiceStr: schemas.Ptr("auto"),
+			},
+			mutate: func(request *schemas.BifrostResponsesRequest) {
+				request.Params.Tools = []schemas.ResponsesTool{{
+					Type:                         schemas.ResponsesToolTypeCodeInterpreter,
+					ResponsesToolCodeInterpreter: &schemas.ResponsesToolCodeInterpreter{Container: map[string]interface{}{"type": "auto"}},
+				}}
+			},
+			wantMode: "auto",
+		},
+		{
+			name: "StructCodeInterpreter",
+			choice: &schemas.ResponsesToolChoice{ResponsesToolChoiceStruct: &schemas.ResponsesToolChoiceStruct{
+				Type: schemas.ResponsesToolChoiceTypeCodeInterpreter,
+			}},
+			mutate: func(request *schemas.BifrostResponsesRequest) {
+				request.Params.Tools = []schemas.ResponsesTool{{
+					Type:                         schemas.ResponsesToolTypeCodeInterpreter,
+					ResponsesToolCodeInterpreter: &schemas.ResponsesToolCodeInterpreter{Container: map[string]interface{}{"type": "auto"}},
+				}}
+			},
+			wantTool: "code_interpreter",
+		},
+		{
+			name: "StructImageGeneration",
+			choice: &schemas.ResponsesToolChoice{ResponsesToolChoiceStruct: &schemas.ResponsesToolChoiceStruct{
+				Type: schemas.ResponsesToolChoiceTypeImageGeneration,
+			}},
+			mutate: func(request *schemas.BifrostResponsesRequest) {
+				request.Params.Tools = []schemas.ResponsesTool{{
+					Type: schemas.ResponsesToolTypeImageGeneration,
+					ResponsesToolImageGeneration: &schemas.ResponsesToolImageGeneration{
+						Size: schemas.Ptr("1024x1024"),
+					},
+				}}
+			},
+			wantTool: "image_generate",
+		},
+		{
+			name: "StructWebSearchPreview",
+			choice: &schemas.ResponsesToolChoice{ResponsesToolChoiceStruct: &schemas.ResponsesToolChoiceStruct{
+				Type: schemas.ResponsesToolChoiceTypeWebSearchPreview,
+			}},
+			mutate: func(request *schemas.BifrostResponsesRequest) {
+				request.Params.Tools = []schemas.ResponsesTool{{
+					Type: schemas.ResponsesToolTypeWebSearchPreview,
+					ResponsesToolWebSearchPreview: &schemas.ResponsesToolWebSearchPreview{
+						SearchContextSize: schemas.Ptr("low"),
+					},
+				}}
+			},
+			wantTool: "web_search",
+		},
+		{
+			name: "StructURLContentExtraction",
+			choice: &schemas.ResponsesToolChoice{ResponsesToolChoiceStruct: &schemas.ResponsesToolChoiceStruct{
+				Type: schemas.ResponsesToolChoiceType("url_content_extraction"),
+			}},
+			mutate: func(request *schemas.BifrostResponsesRequest) {
+				request.Params.Tools = []schemas.ResponsesTool{{
+					Type: schemas.ResponsesToolType("url_content_extraction"),
+				}}
+			},
+			wantTool: "url_content_extraction",
+		},
+		{
+			name: "StructModel3DGenerate",
+			choice: &schemas.ResponsesToolChoice{ResponsesToolChoiceStruct: &schemas.ResponsesToolChoiceStruct{
+				Type: schemas.ResponsesToolChoiceType("model_3d_generate"),
+			}},
+			mutate: func(request *schemas.BifrostResponsesRequest) {
+				request.Params.Tools = []schemas.ResponsesTool{{
+					Type: schemas.ResponsesToolType("model_3d_generate"),
+				}}
+			},
+			wantTool: "model_3d_generate",
 		},
 	}
 
@@ -416,14 +509,23 @@ func testGigaChatToolsResponsesToolChoiceVariants(t *testing.T) {
 			t.Parallel()
 
 			request := testGigaChatResponsesToolRequest(t, toolName)
+			if test.mutate != nil {
+				test.mutate(request)
+			}
 			request.Params.ToolChoice = test.choice
 			gigaChatReq, err := ToGigaChatResponsesRequest(request)
 			if err != nil {
 				t.Fatalf("ToGigaChatResponsesRequest returned error: %v", err)
 			}
-			if test.wantForced != "" {
-				if gigaChatReq.ToolConfig == nil || gigaChatReq.ToolConfig.FunctionName == nil || *gigaChatReq.ToolConfig.FunctionName != test.wantForced || gigaChatReq.ToolConfig.Mode != "forced" {
+			if test.wantFunction != "" {
+				if gigaChatReq.ToolConfig == nil || gigaChatReq.ToolConfig.FunctionName == nil || *gigaChatReq.ToolConfig.FunctionName != test.wantFunction || gigaChatReq.ToolConfig.Mode != "forced" {
 					t.Fatalf("forced tool_config mismatch: %#v", gigaChatReq.ToolConfig)
+				}
+				return
+			}
+			if test.wantTool != "" {
+				if gigaChatReq.ToolConfig == nil || gigaChatReq.ToolConfig.ToolName == nil || *gigaChatReq.ToolConfig.ToolName != test.wantTool || gigaChatReq.ToolConfig.Mode != "forced" {
+					t.Fatalf("forced built-in tool_config mismatch: %#v", gigaChatReq.ToolConfig)
 				}
 				return
 			}
@@ -540,6 +642,35 @@ func testGigaChatToolsResponsesRejectsUnsupportedPolicy(t *testing.T) {
 			wantErr: "tool_choice",
 		},
 		{
+			name: "AnyToolChoice",
+			mutate: func(request *schemas.BifrostResponsesRequest) {
+				request.Params.ToolChoice = &schemas.ResponsesToolChoice{ResponsesToolChoiceStr: schemas.Ptr("any")}
+			},
+			wantErr: "cannot require an arbitrary tool",
+		},
+		{
+			name: "StructRequiredToolChoice",
+			mutate: func(request *schemas.BifrostResponsesRequest) {
+				request.Params.ToolChoice = &schemas.ResponsesToolChoice{ResponsesToolChoiceStruct: &schemas.ResponsesToolChoiceStruct{
+					Type: schemas.ResponsesToolChoiceTypeRequired,
+				}}
+			},
+			wantErr: "cannot require an arbitrary tool",
+		},
+		{
+			name: "AllowedToolsChoice",
+			mutate: func(request *schemas.BifrostResponsesRequest) {
+				request.Params.ToolChoice = &schemas.ResponsesToolChoice{ResponsesToolChoiceStruct: &schemas.ResponsesToolChoiceStruct{
+					Type: schemas.ResponsesToolChoiceTypeAllowedTools,
+					Tools: []schemas.ResponsesToolChoiceAllowedToolDef{{
+						Type: string(schemas.ResponsesToolTypeFunction),
+						Name: schemas.Ptr("get_weather"),
+					}},
+				}}
+			},
+			wantErr: "allowed tools set",
+		},
+		{
 			name: "AutoToolChoiceWithoutFunctions",
 			mutate: func(request *schemas.BifrostResponsesRequest) {
 				request.Params.Tools = nil
@@ -556,6 +687,15 @@ func testGigaChatToolsResponsesRejectsUnsupportedPolicy(t *testing.T) {
 				}}
 			},
 			wantErr: "must match",
+		},
+		{
+			name: "UnknownBuiltInToolChoice",
+			mutate: func(request *schemas.BifrostResponsesRequest) {
+				request.Params.ToolChoice = &schemas.ResponsesToolChoice{ResponsesToolChoiceStruct: &schemas.ResponsesToolChoiceStruct{
+					Type: schemas.ResponsesToolChoiceTypeCodeInterpreter,
+				}}
+			},
+			wantErr: "must match a declared",
 		},
 		{
 			name: "ExtraParamToolConfigBypass",

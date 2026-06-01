@@ -19,6 +19,11 @@ var gigaChatBuiltInFunctionNames = map[string]struct{}{
 
 const (
 	gigaChatResponsesUserFunctionNamePrefix        = "__bifrost_gigachat_user_"
+	gigaChatResponsesToolNameCodeInterpreter       = "code_interpreter"
+	gigaChatResponsesToolNameImageGenerate         = "image_generate"
+	gigaChatResponsesToolNameModel3DGenerate       = "model_3d_generate"
+	gigaChatResponsesToolNameURLContentExtraction  = "url_content_extraction"
+	gigaChatResponsesToolNameWebSearch             = "web_search"
 	gigaChatResponsesToolTypeURLContentExtraction  = "url_content_extraction"
 	gigaChatResponsesToolTypeModel3DGenerate       = "model_3d_generate"
 	gigaChatResponsesSearchContextSizeFlagPrefix   = "search_context_size:"
@@ -442,17 +447,20 @@ func toGigaChatResponsesToolConfig(toolChoice *schemas.ResponsesToolChoice, tool
 	if toolChoice == nil {
 		return nil, nil
 	}
+	targets := newGigaChatResponsesToolChoiceTargets(tools)
 	if toolChoice.ResponsesToolChoiceStr != nil {
 		switch strings.TrimSpace(*toolChoice.ResponsesToolChoiceStr) {
 		case "":
 			return nil, nil
 		case "auto":
-			if len(tools) == 0 {
-				return nil, fmt.Errorf("tool_choice auto requires at least one declared GigaChat function tool")
+			if !targets.HasTools() {
+				return nil, fmt.Errorf("tool_choice auto requires at least one declared GigaChat tool")
 			}
 			return &GigaChatResponsesToolConfig{Mode: "auto"}, nil
 		case "none":
 			return &GigaChatResponsesToolConfig{Mode: "none"}, nil
+		case "required", "any":
+			return nil, fmt.Errorf("tool_choice %q is not supported by GigaChat Responses because tool_config cannot require an arbitrary tool without a function_name or tool_name", strings.TrimSpace(*toolChoice.ResponsesToolChoiceStr))
 		default:
 			return nil, fmt.Errorf("tool_choice %q is not supported by GigaChat Responses", *toolChoice.ResponsesToolChoiceStr)
 		}
@@ -468,33 +476,104 @@ func toGigaChatResponsesToolConfig(toolChoice *schemas.ResponsesToolChoice, tool
 			return nil, fmt.Errorf("tool_choice function name is required")
 		}
 		name := strings.TrimSpace(*choice.Name)
-		if !gigaChatResponsesToolNameExists(tools, name) {
+		gigaChatName, ok := targets.Functions[name]
+		if !ok {
 			return nil, fmt.Errorf("tool_choice function %q must match a declared GigaChat function tool", name)
 		}
-		name = toGigaChatResponsesFunctionName(name)
 		return &GigaChatResponsesToolConfig{
 			Mode:         "forced",
-			FunctionName: &name,
+			FunctionName: &gigaChatName,
 		}, nil
 	case schemas.ResponsesToolChoiceTypeAuto:
-		if len(tools) == 0 {
-			return nil, fmt.Errorf("tool_choice auto requires at least one declared GigaChat function tool")
+		if !targets.HasTools() {
+			return nil, fmt.Errorf("tool_choice auto requires at least one declared GigaChat tool")
 		}
 		return &GigaChatResponsesToolConfig{Mode: "auto"}, nil
 	case schemas.ResponsesToolChoiceTypeNone:
 		return &GigaChatResponsesToolConfig{Mode: "none"}, nil
-	default:
+	case schemas.ResponsesToolChoiceTypeAny, schemas.ResponsesToolChoiceTypeRequired:
+		return nil, fmt.Errorf("tool_choice type %q is not supported by GigaChat Responses because tool_config cannot require an arbitrary tool without a function_name or tool_name", choice.Type)
+	case schemas.ResponsesToolChoiceTypeAllowedTools:
+		return nil, fmt.Errorf("tool_choice type %q is not supported by GigaChat Responses because tool_config supports one forced tool_name or function_name, not an allowed tools set", choice.Type)
+	case schemas.ResponsesToolChoiceTypeFileSearch, schemas.ResponsesToolChoiceTypeComputerUsePreview, schemas.ResponsesToolChoiceTypeMCP, schemas.ResponsesToolChoiceTypeCustom:
 		return nil, fmt.Errorf("tool_choice type %q is not supported by GigaChat Responses", choice.Type)
+	default:
+		toolName, ok := targets.BuiltIns[gigaChatResponsesToolChoiceTypeToBuiltInName(choice.Type)]
+		if !ok {
+			return nil, fmt.Errorf("tool_choice type %q must match a declared GigaChat built-in tool", choice.Type)
+		}
+		return &GigaChatResponsesToolConfig{
+			Mode:     "forced",
+			ToolName: &toolName,
+		}, nil
 	}
 }
 
-func gigaChatResponsesToolNameExists(tools []schemas.ResponsesTool, name string) bool {
+type gigaChatResponsesToolChoiceTargets struct {
+	Functions map[string]string
+	BuiltIns  map[string]string
+}
+
+func newGigaChatResponsesToolChoiceTargets(tools []schemas.ResponsesTool) gigaChatResponsesToolChoiceTargets {
+	targets := gigaChatResponsesToolChoiceTargets{
+		Functions: make(map[string]string, len(tools)),
+		BuiltIns:  make(map[string]string, len(tools)),
+	}
+
 	for _, tool := range tools {
-		if tool.Type == schemas.ResponsesToolTypeFunction && tool.Name != nil && strings.TrimSpace(*tool.Name) == name {
-			return true
+		if tool.Type == schemas.ResponsesToolTypeFunction && tool.Name != nil {
+			name := strings.TrimSpace(*tool.Name)
+			if name != "" {
+				targets.Functions[name] = toGigaChatResponsesFunctionName(name)
+			}
+			continue
+		}
+		if toolName, ok := gigaChatResponsesToolTypeToBuiltInName(tool.Type); ok {
+			targets.BuiltIns[toolName] = toolName
 		}
 	}
-	return false
+	return targets
+}
+
+func (targets gigaChatResponsesToolChoiceTargets) HasTools() bool {
+	return len(targets.Functions) > 0 || len(targets.BuiltIns) > 0
+}
+
+func gigaChatResponsesToolTypeToBuiltInName(toolType schemas.ResponsesToolType) (string, bool) {
+	switch {
+	case isGigaChatResponsesWebSearchToolType(toolType):
+		return gigaChatResponsesToolNameWebSearch, true
+	case toolType == schemas.ResponsesToolTypeCodeInterpreter:
+		return gigaChatResponsesToolNameCodeInterpreter, true
+	case toolType == schemas.ResponsesToolTypeImageGeneration:
+		return gigaChatResponsesToolNameImageGenerate, true
+	case toolType == schemas.ResponsesToolTypeWebFetch || string(toolType) == gigaChatResponsesToolTypeURLContentExtraction:
+		return gigaChatResponsesToolNameURLContentExtraction, true
+	case string(toolType) == gigaChatResponsesToolTypeModel3DGenerate:
+		return gigaChatResponsesToolNameModel3DGenerate, true
+	default:
+		return "", false
+	}
+}
+
+func gigaChatResponsesToolChoiceTypeToBuiltInName(choiceType schemas.ResponsesToolChoiceType) string {
+	value := strings.TrimSpace(string(choiceType))
+	switch {
+	case value == string(schemas.ResponsesToolChoiceTypeCodeInterpreter):
+		return gigaChatResponsesToolNameCodeInterpreter
+	case value == string(schemas.ResponsesToolChoiceTypeImageGeneration):
+		return gigaChatResponsesToolNameImageGenerate
+	case value == string(schemas.ResponsesToolChoiceTypeWebSearchPreview) ||
+		value == string(schemas.ResponsesToolTypeWebSearch) ||
+		strings.HasPrefix(value, string(schemas.ResponsesToolTypeWebSearch)+"_"):
+		return gigaChatResponsesToolNameWebSearch
+	case value == string(schemas.ResponsesToolTypeWebFetch) || value == gigaChatResponsesToolTypeURLContentExtraction:
+		return gigaChatResponsesToolNameURLContentExtraction
+	case value == gigaChatResponsesToolTypeModel3DGenerate:
+		return gigaChatResponsesToolNameModel3DGenerate
+	default:
+		return ""
+	}
 }
 
 func unsupportedGigaChatToolControlExtraParams(extraParams map[string]interface{}, names ...string) []string {
