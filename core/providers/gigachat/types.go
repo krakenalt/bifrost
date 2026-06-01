@@ -119,6 +119,7 @@ type GigaChatChatStreamChoice struct {
 type GigaChatChatStreamDelta struct {
 	Role             *string               `json:"role,omitempty"`
 	Content          *string               `json:"content,omitempty"`
+	Reasoning        *string               `json:"reasoning,omitempty"`
 	FunctionCall     *GigaChatFunctionCall `json:"function_call,omitempty"`
 	FunctionsStateID *string               `json:"functions_state_id,omitempty"`
 }

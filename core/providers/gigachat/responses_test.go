@@ -42,6 +42,7 @@ func testGigaChatResponses(t *testing.T) {
 	t.Parallel()
 
 	t.Run("ConverterMapsTextAndUsage", testGigaChatResponsesConverterMapsTextAndUsage)
+	t.Run("ConverterMapsReasoningRole", testGigaChatResponsesConverterMapsReasoningRole)
 	t.Run("ConverterMapsToolCall", testGigaChatResponsesConverterMapsToolCall)
 	t.Run("ExecutesWithOAuthToken", testGigaChatResponsesExecutesWithOAuthToken)
 	t.Run("MapsProviderErrors", testGigaChatResponsesMapsProviderErrors)
@@ -52,6 +53,7 @@ func testGigaChatResponsesStream(t *testing.T) {
 	t.Parallel()
 
 	t.Run("TextDeltasAndUsage", testGigaChatResponsesStreamTextDeltasAndUsage)
+	t.Run("ReasoningDeltas", testGigaChatResponsesStreamReasoningDeltas)
 	t.Run("ToolCallDeltas", testGigaChatResponsesStreamToolCallDeltas)
 	t.Run("MapsErrorEvents", testGigaChatResponsesStreamMapsErrorEvents)
 	t.Run("HandlesContextCancellation", testGigaChatResponsesStreamHandlesContextCancellation)
@@ -424,6 +426,74 @@ func testGigaChatResponsesConverterMapsTextAndUsage(t *testing.T) {
 	}
 }
 
+func testGigaChatResponsesConverterMapsReasoningRole(t *testing.T) {
+	t.Parallel()
+
+	response := &GigaChatResponsesResponse{
+		CreatedAt: 1780306293,
+		Model:     "GigaChat-2-Reasoning:2.0.29.05",
+		Messages: []GigaChatResponsesMessage{
+			{
+				Role: "reasoning",
+				Content: []GigaChatResponsesContentPart{{
+					Text: schemas.Ptr("...reasoning text..."),
+				}},
+			},
+			{
+				Role: "assistant",
+				Content: []GigaChatResponsesContentPart{{
+					Text: schemas.Ptr("**Столица Франции — Париж.**"),
+				}},
+			},
+		},
+		FinishReason: schemas.Ptr("stop"),
+	}
+
+	converted := ToBifrostResponsesResponse(schemas.GigaChat, response)
+	if converted == nil {
+		t.Fatal("expected response, got nil")
+	}
+	if len(converted.Output) != 2 {
+		t.Fatalf("output count mismatch: got %d", len(converted.Output))
+	}
+
+	reasoning := converted.Output[0]
+	if reasoning.Type == nil || *reasoning.Type != schemas.ResponsesMessageTypeReasoning {
+		t.Fatalf("reasoning output type mismatch: %#v", reasoning.Type)
+	}
+	if reasoning.Role == nil || *reasoning.Role != schemas.ResponsesInputMessageRoleAssistant {
+		t.Fatalf("reasoning output role mismatch: %#v", reasoning.Role)
+	}
+	if reasoning.Status == nil || *reasoning.Status != "completed" {
+		t.Fatalf("reasoning status mismatch: %#v", reasoning.Status)
+	}
+	if reasoning.Content != nil {
+		t.Fatalf("reasoning should not be converted to ordinary message content: %#v", reasoning.Content)
+	}
+	if reasoning.ResponsesReasoning == nil || len(reasoning.ResponsesReasoning.Summary) != 1 {
+		t.Fatalf("reasoning summary mismatch: %#v", reasoning.ResponsesReasoning)
+	}
+	summary := reasoning.ResponsesReasoning.Summary[0]
+	if summary.Type != schemas.ResponsesReasoningContentBlockTypeSummaryText || summary.Text != "...reasoning text..." {
+		t.Fatalf("reasoning summary block mismatch: %#v", summary)
+	}
+
+	message := converted.Output[1]
+	if message.Type == nil || *message.Type != schemas.ResponsesMessageTypeMessage {
+		t.Fatalf("assistant output type mismatch: %#v", message.Type)
+	}
+	if message.Role == nil || *message.Role != schemas.ResponsesInputMessageRoleAssistant {
+		t.Fatalf("assistant output role mismatch: %#v", message.Role)
+	}
+	if message.Content == nil || len(message.Content.ContentBlocks) != 1 {
+		t.Fatalf("assistant content mismatch: %#v", message.Content)
+	}
+	block := message.Content.ContentBlocks[0]
+	if block.Type != schemas.ResponsesOutputMessageContentTypeText || block.Text == nil || *block.Text != "**Столица Франции — Париж.**" {
+		t.Fatalf("assistant text block mismatch: %#v", block)
+	}
+}
+
 func testGigaChatResponsesConverterMapsToolCall(t *testing.T) {
 	t.Parallel()
 
@@ -710,6 +780,49 @@ func testGigaChatResponsesStreamTextDeltasAndUsage(t *testing.T) {
 	}
 	if got := ctx.Value(schemas.BifrostContextKeyProviderResponseHeaders); got == nil {
 		t.Fatal("provider response headers were not stored in context")
+	}
+}
+
+func testGigaChatResponsesStreamReasoningDeltas(t *testing.T) {
+	t.Parallel()
+
+	state := schemas.AcquireChatToResponsesStreamState()
+	defer schemas.ReleaseChatToResponsesStreamState(state)
+
+	response := &GigaChatResponsesResponse{
+		MessageID: schemas.Ptr("resp-reasoning-stream"),
+		CreatedAt: 1780306293,
+		Model:     "GigaChat-2-Reasoning:2.0.29.05",
+		Messages: []GigaChatResponsesMessage{{
+			Role: "reasoning",
+			Content: []GigaChatResponsesContentPart{{
+				Text: schemas.Ptr("streamed reasoning"),
+			}},
+		}},
+	}
+
+	events := ToBifrostResponsesStreamResponse(schemas.GigaChat, response, state)
+	if len(events) == 0 {
+		t.Fatal("expected stream events, got none")
+	}
+
+	var foundReasoningDelta bool
+	for _, event := range events {
+		if event == nil {
+			continue
+		}
+		if event.Type == schemas.ResponsesStreamResponseTypeOutputTextDelta && event.Delta != nil && *event.Delta == "streamed reasoning" {
+			t.Fatalf("reasoning delta was emitted as output_text: %#v", event)
+		}
+		if event.Type == schemas.ResponsesStreamResponseTypeOutputItemAdded && event.Item != nil && event.Item.Role != nil && *event.Item.Role == schemas.ResponsesMessageRoleType("reasoning") {
+			t.Fatalf("reasoning delta created ordinary message role=reasoning: %#v", event.Item)
+		}
+		if event.Type == schemas.ResponsesStreamResponseTypeReasoningSummaryTextDelta && event.Delta != nil && *event.Delta == "streamed reasoning" {
+			foundReasoningDelta = true
+		}
+	}
+	if !foundReasoningDelta {
+		t.Fatalf("expected reasoning summary delta, got %#v", events)
 	}
 }
 

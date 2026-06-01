@@ -10,6 +10,8 @@ import (
 	schemas "github.com/maximhq/bifrost/core/schemas"
 )
 
+const gigaChatResponsesRoleReasoning = "reasoning"
+
 // ToGigaChatResponsesRequest converts a Bifrost Responses request to GigaChat v2 chat completions format.
 func ToGigaChatResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) (*GigaChatResponsesRequest, error) {
 	if bifrostReq == nil {
@@ -256,7 +258,11 @@ func toGigaChatResponsesMessageStreamDelta(message *GigaChatResponsesMessage, fa
 
 	delta := &GigaChatChatStreamDelta{}
 	if strings.TrimSpace(message.Role) != "" {
-		delta.Role = &message.Role
+		role := message.Role
+		if isGigaChatResponsesReasoningRole(role) {
+			role = string(schemas.ChatMessageRoleAssistant)
+		}
+		delta.Role = &role
 	}
 
 	var textBuilder strings.Builder
@@ -271,7 +277,11 @@ func toGigaChatResponsesMessageStreamDelta(message *GigaChatResponsesMessage, fa
 		}
 	}
 	if text := textBuilder.String(); text != "" {
-		delta.Content = &text
+		if isGigaChatResponsesReasoningRole(message.Role) {
+			delta.Reasoning = &text
+		} else {
+			delta.Content = &text
+		}
 	}
 	if functionCall == nil {
 		functionCall = message.FunctionCall
@@ -357,6 +367,10 @@ func toBifrostGigaChatResponsesMessageOutput(message GigaChatResponsesMessage, f
 	if messageID == nil || strings.TrimSpace(*messageID) == "" {
 		messageID = fallbackMessageID
 	}
+	if isGigaChatResponsesReasoningRole(message.Role) {
+		return toBifrostGigaChatResponsesReasoningOutput(message, messageID)
+	}
+
 	toolsStateID := message.ToolsStateID
 	if toolsStateID == nil || strings.TrimSpace(*toolsStateID) == "" {
 		toolsStateID = fallbackToolsStateID
@@ -409,6 +423,36 @@ func toBifrostGigaChatResponsesMessageOutput(message GigaChatResponsesMessage, f
 		}
 	}
 	return output
+}
+
+func toBifrostGigaChatResponsesReasoningOutput(message GigaChatResponsesMessage, messageID *string) []schemas.ResponsesMessage {
+	var textBuilder strings.Builder
+	for _, part := range message.Content {
+		if part.Text != nil {
+			textBuilder.WriteString(*part.Text)
+		}
+	}
+
+	reasoningText := textBuilder.String()
+	if strings.TrimSpace(reasoningText) == "" {
+		return nil
+	}
+
+	messageType := schemas.ResponsesMessageTypeReasoning
+	role := schemas.ResponsesInputMessageRoleAssistant
+	itemID := toBifrostGigaChatResponsesReasoningItemID(messageID)
+	return []schemas.ResponsesMessage{{
+		ID:     itemID,
+		Type:   &messageType,
+		Role:   &role,
+		Status: schemas.Ptr("completed"),
+		ResponsesReasoning: &schemas.ResponsesReasoning{
+			Summary: []schemas.ResponsesReasoningSummary{{
+				Type: schemas.ResponsesReasoningContentBlockTypeSummaryText,
+				Text: reasoningText,
+			}},
+		},
+	}}
 }
 
 func toBifrostGigaChatResponsesFunctionCall(messageID *string, toolsStateID *string, index int, functionCall *GigaChatResponsesFunctionCall) *schemas.ResponsesMessage {
@@ -472,6 +516,18 @@ func toBifrostGigaChatResponsesItemID(prefix string, messageID *string, index in
 		return fmt.Sprintf("%s_%s_%d", prefix, strings.TrimSpace(*messageID), index)
 	}
 	return fmt.Sprintf("%s_%d", prefix, index)
+}
+
+func toBifrostGigaChatResponsesReasoningItemID(messageID *string) *string {
+	if messageID == nil || strings.TrimSpace(*messageID) == "" {
+		return nil
+	}
+	itemID := "rs_" + strings.TrimSpace(*messageID)
+	return &itemID
+}
+
+func isGigaChatResponsesReasoningRole(role string) bool {
+	return strings.EqualFold(strings.TrimSpace(role), gigaChatResponsesRoleReasoning)
 }
 
 func stringifyGigaChatResponsesPayload(payload interface{}) string {
@@ -714,7 +770,7 @@ func toGigaChatResponsesReasoningMessage(message schemas.ResponsesMessage) ([]Gi
 		return nil, fmt.Errorf("reasoning item content is required")
 	}
 	return []GigaChatResponsesMessage{{
-		Role:      "reasoning",
+		Role:      gigaChatResponsesRoleReasoning,
 		MessageID: message.ID,
 		Content:   content,
 	}}, nil

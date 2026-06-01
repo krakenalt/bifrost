@@ -424,8 +424,9 @@ func toBifrostGigaChatStreamDelta(index int, delta *GigaChatChatStreamDelta) *sc
 	}
 
 	bifrostDelta := &schemas.ChatStreamResponseChoiceDelta{
-		Role:    delta.Role,
-		Content: delta.Content,
+		Role:      delta.Role,
+		Content:   delta.Content,
+		Reasoning: delta.Reasoning,
 	}
 	if delta.FunctionCall != nil {
 		arguments := compactGigaChatFunctionArguments(delta.FunctionCall.Arguments)
