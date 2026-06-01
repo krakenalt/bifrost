@@ -185,6 +185,60 @@ type GigaChatFileContent struct {
 	Content string `json:"content"`
 }
 
+// # BATCH TYPES
+
+// GigaChatBatchMethod selects the target operation for GigaChat batch execution.
+type GigaChatBatchMethod string
+
+const (
+	GigaChatBatchMethodChatCompletions GigaChatBatchMethod = "chat_completions"
+	GigaChatBatchMethodEmbedder        GigaChatBatchMethod = "embedder"
+)
+
+// GigaChatBatchStatus is the lifecycle state returned by GigaChat batch APIs.
+type GigaChatBatchStatus string
+
+const (
+	GigaChatBatchStatusCreated    GigaChatBatchStatus = "created"
+	GigaChatBatchStatusInProgress GigaChatBatchStatus = "in_progress"
+	GigaChatBatchStatusCompleted  GigaChatBatchStatus = "completed"
+)
+
+// GigaChatBatchRequestCounts tracks processed rows in a GigaChat batch job.
+type GigaChatBatchRequestCounts struct {
+	Total     int `json:"total,omitempty"`
+	Completed int `json:"completed,omitempty"`
+	Failed    int `json:"failed,omitempty"`
+}
+
+// GigaChatBatch is a batch metadata object returned by GigaChat.
+type GigaChatBatch struct {
+	ID               string                      `json:"id"`
+	Object           string                      `json:"object,omitempty"`
+	Method           GigaChatBatchMethod         `json:"method,omitempty"`
+	Status           GigaChatBatchStatus         `json:"status,omitempty"`
+	RequestCounts    *GigaChatBatchRequestCounts `json:"request_counts,omitempty"`
+	InputFileID      *string                     `json:"input_file_id,omitempty"`
+	OutputFileID     *string                     `json:"output_file_id,omitempty"`
+	ResultFileID     *string                     `json:"result_file_id,omitempty"`
+	ErrorFileID      *string                     `json:"error_file_id,omitempty"`
+	CompletionWindow string                      `json:"completion_window,omitempty"`
+	CreatedAt        int64                       `json:"created_at,omitempty"`
+	UpdatedAt        *int64                      `json:"updated_at,omitempty"`
+	CompletedAt      *int64                      `json:"completed_at,omitempty"`
+}
+
+// GigaChatBatches is a list wrapper for GigaChat batch metadata.
+type GigaChatBatches struct {
+	Data []GigaChatBatch `json:"data"`
+}
+
+// GigaChatBatchInputRow is a single JSONL row accepted by GigaChat batches.
+type GigaChatBatchInputRow struct {
+	ID      string          `json:"id"`
+	Request json.RawMessage `json:"request"`
+}
+
 // # EMBEDDING TYPES
 
 // GigaChatEmbeddingRequest is the v1 embeddings request body.
