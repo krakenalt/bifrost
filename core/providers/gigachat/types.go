@@ -25,17 +25,18 @@ type GigaChatPasswordTokenResponse struct {
 
 // GigaChatChatRequest is the v1 chat completions request body.
 type GigaChatChatRequest struct {
-	Model        string                 `json:"model"`
-	Messages     []GigaChatChatMessage  `json:"messages"`
-	Temperature  *float64               `json:"temperature,omitempty"`
-	TopP         *float64               `json:"top_p,omitempty"`
-	MaxTokens    *int                   `json:"max_tokens,omitempty"`
-	N            *int                   `json:"n,omitempty"`
-	Stop         []string               `json:"stop,omitempty"`
-	Stream       *bool                  `json:"stream,omitempty"`
-	FunctionCall interface{}            `json:"function_call,omitempty"`
-	Functions    []GigaChatFunction     `json:"functions,omitempty"`
-	ExtraParams  map[string]interface{} `json:"-"`
+	Model           string                 `json:"model"`
+	Messages        []GigaChatChatMessage  `json:"messages"`
+	Temperature     *float64               `json:"temperature,omitempty"`
+	TopP            *float64               `json:"top_p,omitempty"`
+	MaxTokens       *int                   `json:"max_tokens,omitempty"`
+	N               *int                   `json:"n,omitempty"`
+	Stop            []string               `json:"stop,omitempty"`
+	Stream          *bool                  `json:"stream,omitempty"`
+	ReasoningEffort *string                `json:"reasoning_effort,omitempty"`
+	FunctionCall    interface{}            `json:"function_call,omitempty"`
+	Functions       []GigaChatFunction     `json:"functions,omitempty"`
+	ExtraParams     map[string]interface{} `json:"-"`
 }
 
 // GetExtraParams returns provider-specific passthrough fields.
@@ -51,8 +52,28 @@ type GigaChatChatMessage struct {
 	Role             string                      `json:"role,omitempty"`
 	Content          *schemas.ChatMessageContent `json:"content,omitempty"`
 	Name             *string                     `json:"name,omitempty"`
+	Reasoning        *string                     `json:"reasoning_content,omitempty"`
 	FunctionCall     *GigaChatFunctionCall       `json:"function_call,omitempty"`
 	FunctionsStateID *string                     `json:"functions_state_id,omitempty"`
+}
+
+// UnmarshalJSON accepts both GigaChat's reasoning_content field and legacy
+// reasoning-shaped payloads while preserving reasoning_content for outbound JSON.
+func (message *GigaChatChatMessage) UnmarshalJSON(data []byte) error {
+	type Alias GigaChatChatMessage
+	var aux struct {
+		Alias
+		LegacyReasoning *string `json:"reasoning,omitempty"`
+	}
+	if err := json.Unmarshal(data, &aux); err != nil {
+		return err
+	}
+
+	*message = GigaChatChatMessage(aux.Alias)
+	if message.Reasoning == nil && aux.LegacyReasoning != nil {
+		message.Reasoning = aux.LegacyReasoning
+	}
+	return nil
 }
 
 // GigaChatFunctionCall is the legacy GigaChat function-call shape.
@@ -119,9 +140,27 @@ type GigaChatChatStreamChoice struct {
 type GigaChatChatStreamDelta struct {
 	Role             *string               `json:"role,omitempty"`
 	Content          *string               `json:"content,omitempty"`
-	Reasoning        *string               `json:"reasoning,omitempty"`
+	Reasoning        *string               `json:"reasoning_content,omitempty"`
 	FunctionCall     *GigaChatFunctionCall `json:"function_call,omitempty"`
 	FunctionsStateID *string               `json:"functions_state_id,omitempty"`
+}
+
+// UnmarshalJSON accepts both reasoning_content and reasoning stream fields.
+func (delta *GigaChatChatStreamDelta) UnmarshalJSON(data []byte) error {
+	type Alias GigaChatChatStreamDelta
+	var aux struct {
+		Alias
+		LegacyReasoning *string `json:"reasoning,omitempty"`
+	}
+	if err := json.Unmarshal(data, &aux); err != nil {
+		return err
+	}
+
+	*delta = GigaChatChatStreamDelta(aux.Alias)
+	if delta.Reasoning == nil && aux.LegacyReasoning != nil {
+		delta.Reasoning = aux.LegacyReasoning
+	}
+	return nil
 }
 
 // GigaChatChatUsage is token usage returned by GigaChat chat completions.

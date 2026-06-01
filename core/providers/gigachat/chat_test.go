@@ -19,6 +19,7 @@ func testGigaChatChatCompletion(t *testing.T) {
 	t.Parallel()
 
 	t.Run("ConverterMapsRequest", testGigaChatChatConverterMapsRequest)
+	t.Run("ConverterPreservesAssistantReasoningContent", testGigaChatChatConverterPreservesAssistantReasoningContent)
 	t.Run("ExecutesWithOAuthTokenAndExtraParams", testGigaChatChatCompletionExecutesWithOAuthTokenAndExtraParams)
 	t.Run("RejectsUnsupportedTools", testGigaChatChatCompletionRejectsUnsupportedTools)
 	t.Run("MapsProviderErrors", testGigaChatChatCompletionMapsProviderErrors)
@@ -37,6 +38,7 @@ func testGigaChatChatConverterMapsRequest(t *testing.T) {
 	temperature := 0.2
 	topP := 0.8
 	n := 1
+	reasoningEffort := "high"
 	text := "hello"
 	request := &schemas.BifrostChatRequest{
 		Model: "GigaChat",
@@ -52,6 +54,7 @@ func testGigaChatChatConverterMapsRequest(t *testing.T) {
 			TopP:                &topP,
 			N:                   &n,
 			Stop:                []string{"stop"},
+			Reasoning:           &schemas.ChatReasoning{Effort: &reasoningEffort},
 			ExtraParams: map[string]interface{}{
 				"profanity_check": false,
 			},
@@ -71,6 +74,9 @@ func testGigaChatChatConverterMapsRequest(t *testing.T) {
 	if got := gigaChatReq.GetExtraParams()["profanity_check"]; got != false {
 		t.Fatalf("extra param mismatch: got %#v", got)
 	}
+	if gigaChatReq.ReasoningEffort == nil || *gigaChatReq.ReasoningEffort != reasoningEffort {
+		t.Fatalf("reasoning_effort mismatch: got %#v, want %q", gigaChatReq.ReasoningEffort, reasoningEffort)
+	}
 
 	body, err := json.Marshal(gigaChatReq)
 	if err != nil {
@@ -81,6 +87,59 @@ func testGigaChatChatConverterMapsRequest(t *testing.T) {
 	}
 	if !strings.Contains(string(body), `"max_tokens":512`) {
 		t.Fatalf("request body missing max_tokens: %s", body)
+	}
+	if strings.Contains(string(body), `"reasoning":`) {
+		t.Fatalf("request body should not send reasoning object: %s", body)
+	}
+	if !strings.Contains(string(body), `"reasoning_effort":"high"`) {
+		t.Fatalf("request body missing reasoning_effort: %s", body)
+	}
+}
+
+func testGigaChatChatConverterPreservesAssistantReasoningContent(t *testing.T) {
+	t.Parallel()
+
+	userText := "question"
+	answerText := "answer"
+	reasoning := "model reasoning"
+	request := &schemas.BifrostChatRequest{
+		Model: "GigaChat",
+		Input: []schemas.ChatMessage{
+			{
+				Role:    schemas.ChatMessageRoleUser,
+				Content: &schemas.ChatMessageContent{ContentStr: &userText},
+			},
+			{
+				Role:    schemas.ChatMessageRoleAssistant,
+				Content: &schemas.ChatMessageContent{ContentStr: &answerText},
+				ChatAssistantMessage: &schemas.ChatAssistantMessage{
+					Reasoning: &reasoning,
+				},
+			},
+		},
+	}
+
+	gigaChatReq, err := ToGigaChatChatRequest(testBifrostContext(), request)
+	if err != nil {
+		t.Fatalf("ToGigaChatChatRequest returned error: %v", err)
+	}
+	if len(gigaChatReq.Messages) != 2 {
+		t.Fatalf("message count mismatch: got %d", len(gigaChatReq.Messages))
+	}
+	assistant := gigaChatReq.Messages[1]
+	if assistant.Reasoning == nil || *assistant.Reasoning != reasoning {
+		t.Fatalf("assistant reasoning_content mismatch: %#v", assistant.Reasoning)
+	}
+
+	body, err := json.Marshal(gigaChatReq)
+	if err != nil {
+		t.Fatalf("failed to marshal request: %v", err)
+	}
+	if !strings.Contains(string(body), `"reasoning_content":"model reasoning"`) {
+		t.Fatalf("request body missing reasoning_content: %s", body)
+	}
+	if strings.Contains(string(body), `"reasoning":"model reasoning"`) {
+		t.Fatalf("request body should use reasoning_content, got %s", body)
 	}
 }
 
@@ -111,7 +170,7 @@ func testGigaChatChatCompletionExecutesWithOAuthTokenAndExtraParams(t *testing.T
 			w.Header().Set("X-Request-ID", "chat-request-id")
 			_, _ = w.Write([]byte(`{
 				"id":"chatcmpl-test",
-				"choices":[{"index":0,"message":{"role":"assistant","content":"Здравствуйте"},"finish_reason":"stop"}],
+				"choices":[{"index":0,"message":{"role":"assistant","content":"Здравствуйте","reasoning_content":"Думаю"},"finish_reason":"stop"}],
 				"created":1700000000,
 				"model":"GigaChat",
 				"object":"chat.completion",
@@ -155,6 +214,13 @@ func testGigaChatChatCompletionExecutesWithOAuthTokenAndExtraParams(t *testing.T
 	content := response.Choices[0].ChatNonStreamResponseChoice.Message.Content
 	if content == nil || content.ContentStr == nil || *content.ContentStr != "Здравствуйте" {
 		t.Fatalf("content mismatch: %#v", content)
+	}
+	assistant := response.Choices[0].ChatNonStreamResponseChoice.Message.ChatAssistantMessage
+	if assistant == nil || assistant.Reasoning == nil || *assistant.Reasoning != "Думаю" {
+		t.Fatalf("reasoning_content was not mapped: %#v", assistant)
+	}
+	if len(assistant.ReasoningDetails) != 1 || assistant.ReasoningDetails[0].Text == nil || *assistant.ReasoningDetails[0].Text != "Думаю" {
+		t.Fatalf("reasoning details mismatch: %#v", assistant.ReasoningDetails)
 	}
 	if got := ctx.Value(schemas.BifrostContextKeyProviderResponseHeaders); got == nil {
 		t.Fatal("provider response headers were not stored in context")
@@ -289,7 +355,7 @@ func testGigaChatChatCompletionStreamsSSEChunks(t *testing.T) {
 			assertGigaChatChatStreamRequestBody(t, request)
 			w.Header().Set("Content-Type", "text/event-stream")
 			w.Header().Set("X-Request-ID", "stream-request-id")
-			_, _ = w.Write([]byte("data: {\"id\":\"chatcmpl-stream\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"З\"}}],\"created\":1700000000,\"model\":\"GigaChat\",\"object\":\"chat.completion\"}\n\n"))
+			_, _ = w.Write([]byte("data: {\"id\":\"chatcmpl-stream\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"reasoning_content\":\"Думаю\",\"content\":\"З\"}}],\"created\":1700000000,\"model\":\"GigaChat\",\"object\":\"chat.completion\"}\n\n"))
 			_, _ = w.Write([]byte("data: {\"id\":\"chatcmpl-stream\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"дравствуйте\"}}],\"created\":1700000000,\"model\":\"GigaChat\",\"object\":\"chat.completion\"}\n\n"))
 			_, _ = w.Write([]byte("data: {\"id\":\"chatcmpl-stream\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}],\"created\":1700000000,\"model\":\"GigaChat\",\"object\":\"chat.completion\",\"usage\":{\"prompt_tokens\":7,\"completion_tokens\":3,\"total_tokens\":10}}\n\n"))
 			_, _ = w.Write([]byte("data: [DONE]\n\n"))
@@ -320,6 +386,7 @@ func testGigaChatChatCompletionStreamsSSEChunks(t *testing.T) {
 	}
 
 	assertGigaChatStreamContentChunk(t, chunks[0], "З")
+	assertGigaChatStreamReasoningChunk(t, chunks[0], "Думаю")
 	assertGigaChatStreamContentChunk(t, chunks[1], "дравствуйте")
 	finalChunk := chunks[2].BifrostChatResponse
 	if finalChunk == nil {
@@ -637,5 +704,24 @@ func assertGigaChatStreamContentChunk(t *testing.T, chunk *schemas.BifrostStream
 	content := response.Choices[0].ChatStreamResponseChoice.Delta.Content
 	if content == nil || *content != wantContent {
 		t.Fatalf("content mismatch: got %#v, want %q", content, wantContent)
+	}
+}
+
+func assertGigaChatStreamReasoningChunk(t *testing.T, chunk *schemas.BifrostStreamChunk, wantReasoning string) {
+	t.Helper()
+
+	if chunk == nil || chunk.BifrostChatResponse == nil {
+		t.Fatalf("missing chat stream response: %#v", chunk)
+	}
+	response := chunk.BifrostChatResponse
+	if len(response.Choices) != 1 || response.Choices[0].ChatStreamResponseChoice == nil || response.Choices[0].ChatStreamResponseChoice.Delta == nil {
+		t.Fatalf("unexpected choices: %#v", response.Choices)
+	}
+	delta := response.Choices[0].ChatStreamResponseChoice.Delta
+	if delta.Reasoning == nil || *delta.Reasoning != wantReasoning {
+		t.Fatalf("reasoning mismatch: got %#v, want %q", delta.Reasoning, wantReasoning)
+	}
+	if len(delta.ReasoningDetails) != 1 || delta.ReasoningDetails[0].Text == nil || *delta.ReasoningDetails[0].Text != wantReasoning {
+		t.Fatalf("reasoning details mismatch: %#v", delta.ReasoningDetails)
 	}
 }

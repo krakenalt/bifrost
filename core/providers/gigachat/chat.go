@@ -12,6 +12,11 @@ import (
 	schemas "github.com/maximhq/bifrost/core/schemas"
 )
 
+const (
+	gigaChatMinReasoningMaxTokens      = 1
+	gigaChatDefaultCompletionMaxTokens = 4096
+)
+
 // ToGigaChatChatRequest converts a Bifrost chat request to GigaChat v1 format.
 func ToGigaChatChatRequest(_ *schemas.BifrostContext, bifrostReq *schemas.BifrostChatRequest) (*GigaChatChatRequest, error) {
 	if bifrostReq == nil {
@@ -52,6 +57,7 @@ func ToGigaChatChatRequest(_ *schemas.BifrostContext, bifrostReq *schemas.Bifros
 	gigaChatReq.MaxTokens = bifrostReq.Params.MaxCompletionTokens
 	gigaChatReq.N = bifrostReq.Params.N
 	gigaChatReq.Stop = bifrostReq.Params.Stop
+	gigaChatReq.ReasoningEffort = toGigaChatChatReasoningEffort(bifrostReq.Model, bifrostReq.Params)
 	gigaChatReq.ExtraParams = bifrostReq.Params.ExtraParams
 	functions, functionNames, err := toGigaChatChatFunctions(bifrostReq.Params.Tools)
 	if err != nil {
@@ -191,11 +197,13 @@ func toGigaChatChatMessage(message schemas.ChatMessage, toolCallNamesByID map[st
 		}
 		if message.ChatAssistantMessage.Refusal != nil ||
 			message.ChatAssistantMessage.Audio != nil ||
-			message.ChatAssistantMessage.Reasoning != nil ||
-			len(message.ChatAssistantMessage.ReasoningDetails) > 0 ||
 			len(message.ChatAssistantMessage.Annotations) > 0 {
 			return GigaChatChatMessage{}, fmt.Errorf("assistant-only OpenAI metadata is not supported by GigaChat v1 chat completions")
 		}
+	}
+	reasoning, err := toGigaChatChatReasoningContent(message.ChatAssistantMessage)
+	if err != nil {
+		return GigaChatChatMessage{}, err
 	}
 
 	content, err := toGigaChatChatMessageContent(message.Content)
@@ -204,9 +212,10 @@ func toGigaChatChatMessage(message schemas.ChatMessage, toolCallNamesByID map[st
 	}
 
 	return GigaChatChatMessage{
-		Role:    string(message.Role),
-		Content: content,
-		Name:    message.Name,
+		Role:      string(message.Role),
+		Content:   content,
+		Name:      message.Name,
+		Reasoning: reasoning,
 	}, nil
 }
 
@@ -252,11 +261,16 @@ func toGigaChatAssistantFunctionCallMessage(message schemas.ChatMessage) (GigaCh
 	if content == nil {
 		content = &schemas.ChatMessageContent{ContentStr: schemas.Ptr("")}
 	}
+	reasoning, err := toGigaChatChatReasoningContent(message.ChatAssistantMessage)
+	if err != nil {
+		return GigaChatChatMessage{}, err
+	}
 
 	return GigaChatChatMessage{
-		Role:    string(schemas.ChatMessageRoleAssistant),
-		Content: content,
-		Name:    message.Name,
+		Role:      string(schemas.ChatMessageRoleAssistant),
+		Content:   content,
+		Name:      message.Name,
+		Reasoning: reasoning,
 		FunctionCall: &GigaChatFunctionCall{
 			Name:      strings.TrimSpace(*toolCall.Function.Name),
 			Arguments: arguments,
@@ -296,6 +310,37 @@ func toGigaChatFunctionResultMessage(message schemas.ChatMessage, toolCallNamesB
 		Content: content,
 		Name:    &name,
 	}, nil
+}
+
+func toGigaChatChatReasoningContent(assistantMessage *schemas.ChatAssistantMessage) (*string, error) {
+	if assistantMessage == nil {
+		return nil, nil
+	}
+	if assistantMessage.Reasoning != nil {
+		return assistantMessage.Reasoning, nil
+	}
+	if len(assistantMessage.ReasoningDetails) == 0 {
+		return nil, nil
+	}
+
+	var reasoningBuilder strings.Builder
+	for _, detail := range assistantMessage.ReasoningDetails {
+		var text *string
+		switch detail.Type {
+		case schemas.BifrostReasoningDetailsTypeText:
+			text = detail.Text
+		case schemas.BifrostReasoningDetailsTypeSummary:
+			text = detail.Summary
+		default:
+			return nil, fmt.Errorf("assistant reasoning detail type %q is not supported by GigaChat v1 chat completions", detail.Type)
+		}
+		if text == nil {
+			return nil, fmt.Errorf("assistant reasoning detail type %q requires text content for GigaChat v1 chat completions", detail.Type)
+		}
+		reasoningBuilder.WriteString(*text)
+	}
+	reasoning := reasoningBuilder.String()
+	return &reasoning, nil
 }
 
 func toGigaChatChatMessageContent(content *schemas.ChatMessageContent) (*schemas.ChatMessageContent, error) {
@@ -345,7 +390,6 @@ func unsupportedGigaChatChatParams(params *schemas.ChatParameters) []string {
 	addIf(params.PresencePenalty != nil, "presence_penalty")
 	addIf(params.PromptCacheKey != nil, "prompt_cache_key")
 	addIf(params.PromptCacheRetention != nil, "prompt_cache_retention")
-	addIf(params.Reasoning != nil, "reasoning")
 	addIf(params.ResponseFormat != nil, "response_format")
 	addIf(params.SafetyIdentifier != nil, "safety_identifier")
 	addIf(params.Seed != nil, "seed")
@@ -368,6 +412,46 @@ func unsupportedGigaChatChatParams(params *schemas.ChatParameters) []string {
 
 	sort.Strings(unsupported)
 	return unsupported
+}
+
+func toGigaChatChatReasoningEffort(model string, params *schemas.ChatParameters) *string {
+	if params == nil || params.Reasoning == nil {
+		return nil
+	}
+	if params.Reasoning.Enabled != nil && !*params.Reasoning.Enabled {
+		return nil
+	}
+	if params.Reasoning.Effort != nil {
+		effort := normalizeGigaChatChatReasoningEffort(*params.Reasoning.Effort)
+		if effort == "" || effort == "none" {
+			return nil
+		}
+		return &effort
+	}
+	if params.Reasoning.MaxTokens != nil {
+		maxCompletionTokens := providerUtils.GetMaxOutputTokensOrDefault(model, gigaChatDefaultCompletionMaxTokens)
+		if params.MaxCompletionTokens != nil {
+			maxCompletionTokens = *params.MaxCompletionTokens
+		}
+		effort := providerUtils.GetReasoningEffortFromBudgetTokens(*params.Reasoning.MaxTokens, gigaChatMinReasoningMaxTokens, maxCompletionTokens)
+		if effort == "none" {
+			return nil
+		}
+		return &effort
+	}
+	return nil
+}
+
+func normalizeGigaChatChatReasoningEffort(effort string) string {
+	normalized := strings.TrimSpace(strings.ToLower(effort))
+	switch normalized {
+	case "minimal":
+		return "low"
+	case "xhigh", "max":
+		return "high"
+	default:
+		return normalized
+	}
 }
 
 func parseGigaChatChatFunctionArguments(arguments string) (json.RawMessage, error) {
@@ -400,6 +484,13 @@ func toBifrostGigaChatMessage(message *GigaChatChatMessage) *schemas.ChatMessage
 		Content: message.Content,
 		Name:    message.Name,
 	}
+	var assistantMessage *schemas.ChatAssistantMessage
+	if message.Reasoning != nil {
+		assistantMessage = &schemas.ChatAssistantMessage{
+			Reasoning:        message.Reasoning,
+			ReasoningDetails: toBifrostGigaChatReasoningDetails(message.Reasoning),
+		}
+	}
 	if message.FunctionCall != nil {
 		arguments := compactGigaChatFunctionArguments(message.FunctionCall.Arguments)
 		toolCallType := string(schemas.ChatToolTypeFunction)
@@ -411,9 +502,13 @@ func toBifrostGigaChatMessage(message *GigaChatChatMessage) *schemas.ChatMessage
 				Arguments: arguments,
 			},
 		}
-		bifrostMessage.ChatAssistantMessage = &schemas.ChatAssistantMessage{
-			ToolCalls: []schemas.ChatAssistantMessageToolCall{toolCall},
+		if assistantMessage == nil {
+			assistantMessage = &schemas.ChatAssistantMessage{}
 		}
+		assistantMessage.ToolCalls = []schemas.ChatAssistantMessageToolCall{toolCall}
+	}
+	if assistantMessage != nil {
+		bifrostMessage.ChatAssistantMessage = assistantMessage
 	}
 	return bifrostMessage
 }
@@ -424,9 +519,10 @@ func toBifrostGigaChatStreamDelta(index int, delta *GigaChatChatStreamDelta) *sc
 	}
 
 	bifrostDelta := &schemas.ChatStreamResponseChoiceDelta{
-		Role:      delta.Role,
-		Content:   delta.Content,
-		Reasoning: delta.Reasoning,
+		Role:             delta.Role,
+		Content:          delta.Content,
+		Reasoning:        delta.Reasoning,
+		ReasoningDetails: toBifrostGigaChatReasoningDetails(delta.Reasoning),
 	}
 	if delta.FunctionCall != nil {
 		arguments := compactGigaChatFunctionArguments(delta.FunctionCall.Arguments)
@@ -444,6 +540,20 @@ func toBifrostGigaChatStreamDelta(index int, delta *GigaChatChatStreamDelta) *sc
 		}
 	}
 	return bifrostDelta
+}
+
+func toBifrostGigaChatReasoningDetails(reasoning *string) []schemas.ChatReasoningDetails {
+	if reasoning == nil {
+		return nil
+	}
+	text := *reasoning
+	return []schemas.ChatReasoningDetails{
+		{
+			Index: 0,
+			Type:  schemas.BifrostReasoningDetailsTypeText,
+			Text:  &text,
+		},
+	}
 }
 
 func compactGigaChatFunctionArguments(arguments json.RawMessage) string {

@@ -32,6 +32,7 @@ func testGigaChatToolsChatMapsFunctionToolsAndHistory(t *testing.T) {
 	toolCallID := "state-weather"
 	toolCallType := string(schemas.ChatToolTypeFunction)
 	toolArguments := `{"city":"Moscow"}`
+	reasoning := "I should call get_weather"
 	result := `{"temperature":5}`
 	request := &schemas.BifrostChatRequest{
 		Model: "GigaChat",
@@ -44,6 +45,7 @@ func testGigaChatToolsChatMapsFunctionToolsAndHistory(t *testing.T) {
 				Role:    schemas.ChatMessageRoleAssistant,
 				Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("")},
 				ChatAssistantMessage: &schemas.ChatAssistantMessage{
+					Reasoning: &reasoning,
 					ToolCalls: []schemas.ChatAssistantMessageToolCall{{
 						Type: &toolCallType,
 						ID:   &toolCallID,
@@ -92,6 +94,9 @@ func testGigaChatToolsChatMapsFunctionToolsAndHistory(t *testing.T) {
 	assistant := gigaChatReq.Messages[1]
 	if assistant.FunctionCall == nil || assistant.FunctionCall.Name != toolName || string(assistant.FunctionCall.Arguments) != toolArguments {
 		t.Fatalf("assistant function_call mismatch: %#v", assistant)
+	}
+	if assistant.Reasoning == nil || *assistant.Reasoning != reasoning {
+		t.Fatalf("assistant reasoning_content mismatch: %#v", assistant.Reasoning)
 	}
 	if assistant.FunctionsStateID == nil || *assistant.FunctionsStateID != toolCallID {
 		t.Fatalf("functions_state_id mismatch: %#v", assistant.FunctionsStateID)
