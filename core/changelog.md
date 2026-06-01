@@ -1,3 +1,4 @@
+- fix: preserve GigaChat tool state ids as Responses call ids
 - fix: parse GigaChat Responses reasoning role as reasoning output
 - fix: sanitize GigaChat function JSON schemas before request conversion
 - feat: map GigaChat Responses tool choice config

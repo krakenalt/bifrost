@@ -343,6 +343,7 @@ type GigaChatResponsesMessage struct {
 	MessageID    *string                        `json:"message_id,omitempty"`
 	Content      []GigaChatResponsesContentPart `json:"content,omitempty"`
 	ToolsStateID *string                        `json:"tools_state_id,omitempty"`
+	ToolStateID  *string                        `json:"tool_state_id,omitempty"`
 	FunctionCall *GigaChatResponsesFunctionCall `json:"function_call,omitempty"`
 	FinishReason *string                        `json:"finish_reason,omitempty"`
 	ExtraParams  map[string]interface{}         `json:"-"`
