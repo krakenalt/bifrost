@@ -1,3 +1,4 @@
+- feat: implement GigaChat Files API
 - test: add optional GigaChat integration coverage
 - fix: allow GigaChat password tokens with immediate expiry
 - fix: harden GigaChat raw error payload redaction

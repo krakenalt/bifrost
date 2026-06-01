@@ -914,29 +914,150 @@ func (provider *GigaChatProvider) BatchResults(_ *schemas.BifrostContext, _ []sc
 	return nil, provider.unsupported(schemas.BatchResultsRequest)
 }
 
-// FileUpload is not supported by the GigaChat provider skeleton.
-func (provider *GigaChatProvider) FileUpload(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostFileUploadRequest) (*schemas.BifrostFileUploadResponse, *schemas.BifrostError) {
-	return nil, provider.unsupported(schemas.FileUploadRequest)
+// FileUpload uploads a file to GigaChat.
+func (provider *GigaChatProvider) FileUpload(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostFileUploadRequest) (*schemas.BifrostFileUploadResponse, *schemas.BifrostError) {
+	if err := providerUtils.CheckOperationAllowed(schemas.GigaChat, provider.customProviderConfig, schemas.FileUploadRequest); err != nil {
+		return nil, err
+	}
+
+	response, bifrostErr := provider.fileUploadWithRefresh(ctx, key, request, false)
+	if isGigaChatUnauthorizedError(bifrostErr) {
+		return provider.fileUploadWithRefresh(ctx, key, request, true)
+	}
+	return response, bifrostErr
 }
 
-// FileList is not supported by the GigaChat provider skeleton.
-func (provider *GigaChatProvider) FileList(_ *schemas.BifrostContext, _ []schemas.Key, _ *schemas.BifrostFileListRequest) (*schemas.BifrostFileListResponse, *schemas.BifrostError) {
-	return nil, provider.unsupported(schemas.FileListRequest)
+// FileList lists files available to the configured GigaChat account.
+func (provider *GigaChatProvider) FileList(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostFileListRequest) (*schemas.BifrostFileListResponse, *schemas.BifrostError) {
+	if err := providerUtils.CheckOperationAllowed(schemas.GigaChat, provider.customProviderConfig, schemas.FileListRequest); err != nil {
+		return nil, err
+	}
+	if request == nil {
+		request = &schemas.BifrostFileListRequest{Provider: provider.GetProviderKey()}
+	}
+	if request.Limit > 0 {
+		return nil, providerUtils.NewBifrostOperationError("GigaChat file list does not support limit pagination", nil)
+	}
+	if request.Order != nil && strings.TrimSpace(*request.Order) != "" {
+		return nil, providerUtils.NewBifrostOperationError("GigaChat file list does not support order sorting", nil)
+	}
+	if len(keys) == 0 {
+		keys = []schemas.Key{{}}
+	}
+
+	helper, err := providerUtils.NewSerialListHelper(keys, request.After, provider.logger, false)
+	if err != nil {
+		return nil, providerUtils.NewBifrostOperationError("invalid pagination cursor", err)
+	}
+	key, _, ok := helper.GetCurrentKey()
+	if !ok {
+		return &schemas.BifrostFileListResponse{
+			Object: "list",
+			Data:   []schemas.FileObject{},
+		}, nil
+	}
+
+	response, bifrostErr := provider.fileListWithRefresh(ctx, key, request, false)
+	if isGigaChatUnauthorizedError(bifrostErr) {
+		response, bifrostErr = provider.fileListWithRefresh(ctx, key, request, true)
+	}
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	nextCursor, hasMore := helper.BuildNextCursor(false, "")
+	response.HasMore = hasMore
+	if nextCursor != "" {
+		response.After = &nextCursor
+	}
+	return response, nil
 }
 
-// FileRetrieve is not supported by the GigaChat provider skeleton.
-func (provider *GigaChatProvider) FileRetrieve(_ *schemas.BifrostContext, _ []schemas.Key, _ *schemas.BifrostFileRetrieveRequest) (*schemas.BifrostFileRetrieveResponse, *schemas.BifrostError) {
-	return nil, provider.unsupported(schemas.FileRetrieveRequest)
+// FileRetrieve retrieves GigaChat file metadata.
+func (provider *GigaChatProvider) FileRetrieve(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostFileRetrieveRequest) (*schemas.BifrostFileRetrieveResponse, *schemas.BifrostError) {
+	if err := providerUtils.CheckOperationAllowed(schemas.GigaChat, provider.customProviderConfig, schemas.FileRetrieveRequest); err != nil {
+		return nil, err
+	}
+	if request == nil {
+		return nil, providerUtils.NewBifrostOperationError("file retrieve request is nil", nil)
+	}
+	if strings.TrimSpace(request.FileID) == "" {
+		return nil, providerUtils.NewBifrostOperationError("file_id is required", nil)
+	}
+	if len(keys) == 0 {
+		keys = []schemas.Key{{}}
+	}
+
+	var lastErr *schemas.BifrostError
+	for _, key := range keys {
+		response, bifrostErr := provider.fileRetrieveWithRefresh(ctx, key, request, false)
+		if isGigaChatUnauthorizedError(bifrostErr) {
+			response, bifrostErr = provider.fileRetrieveWithRefresh(ctx, key, request, true)
+		}
+		if bifrostErr == nil {
+			return response, nil
+		}
+		lastErr = bifrostErr
+	}
+	return nil, lastErr
 }
 
-// FileDelete is not supported by the GigaChat provider skeleton.
-func (provider *GigaChatProvider) FileDelete(_ *schemas.BifrostContext, _ []schemas.Key, _ *schemas.BifrostFileDeleteRequest) (*schemas.BifrostFileDeleteResponse, *schemas.BifrostError) {
-	return nil, provider.unsupported(schemas.FileDeleteRequest)
+// FileDelete deletes a GigaChat file.
+func (provider *GigaChatProvider) FileDelete(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostFileDeleteRequest) (*schemas.BifrostFileDeleteResponse, *schemas.BifrostError) {
+	if err := providerUtils.CheckOperationAllowed(schemas.GigaChat, provider.customProviderConfig, schemas.FileDeleteRequest); err != nil {
+		return nil, err
+	}
+	if request == nil {
+		return nil, providerUtils.NewBifrostOperationError("file delete request is nil", nil)
+	}
+	if strings.TrimSpace(request.FileID) == "" {
+		return nil, providerUtils.NewBifrostOperationError("file_id is required", nil)
+	}
+	if len(keys) == 0 {
+		keys = []schemas.Key{{}}
+	}
+
+	var lastErr *schemas.BifrostError
+	for _, key := range keys {
+		response, bifrostErr := provider.fileDeleteWithRefresh(ctx, key, request, false)
+		if isGigaChatUnauthorizedError(bifrostErr) {
+			response, bifrostErr = provider.fileDeleteWithRefresh(ctx, key, request, true)
+		}
+		if bifrostErr == nil {
+			return response, nil
+		}
+		lastErr = bifrostErr
+	}
+	return nil, lastErr
 }
 
-// FileContent is not supported by the GigaChat provider skeleton.
-func (provider *GigaChatProvider) FileContent(_ *schemas.BifrostContext, _ []schemas.Key, _ *schemas.BifrostFileContentRequest) (*schemas.BifrostFileContentResponse, *schemas.BifrostError) {
-	return nil, provider.unsupported(schemas.FileContentRequest)
+// FileContent downloads GigaChat file content.
+func (provider *GigaChatProvider) FileContent(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostFileContentRequest) (*schemas.BifrostFileContentResponse, *schemas.BifrostError) {
+	if err := providerUtils.CheckOperationAllowed(schemas.GigaChat, provider.customProviderConfig, schemas.FileContentRequest); err != nil {
+		return nil, err
+	}
+	if request == nil {
+		return nil, providerUtils.NewBifrostOperationError("file content request is nil", nil)
+	}
+	if strings.TrimSpace(request.FileID) == "" {
+		return nil, providerUtils.NewBifrostOperationError("file_id is required", nil)
+	}
+	if len(keys) == 0 {
+		keys = []schemas.Key{{}}
+	}
+
+	var lastErr *schemas.BifrostError
+	for _, key := range keys {
+		response, bifrostErr := provider.fileContentWithRefresh(ctx, key, request, false)
+		if isGigaChatUnauthorizedError(bifrostErr) {
+			response, bifrostErr = provider.fileContentWithRefresh(ctx, key, request, true)
+		}
+		if bifrostErr == nil {
+			return response, nil
+		}
+		lastErr = bifrostErr
+	}
+	return nil, lastErr
 }
 
 // CachedContentCreate is not supported by the GigaChat provider skeleton.

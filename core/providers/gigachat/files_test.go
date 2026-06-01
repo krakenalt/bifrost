@@ -1,7 +1,14 @@
 package gigachat
 
 import (
+	"bytes"
+	"encoding/base64"
 	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync/atomic"
 	"testing"
 
 	schemas "github.com/maximhq/bifrost/core/schemas"
@@ -128,5 +135,276 @@ func TestGigaChatFileTypesJSON(t *testing.T) {
 	}
 	if string(contentRaw) != `{"content":"SGVsbG8="}` {
 		t.Fatalf("content JSON = %s", contentRaw)
+	}
+}
+
+func TestGigaChatFilesHTTP(t *testing.T) {
+	t.Parallel()
+
+	t.Run("UploadMultipart", testGigaChatFileUploadMultipart)
+	t.Run("ListRetrieveDelete", testGigaChatFileListRetrieveDelete)
+	t.Run("ContentRawBytes", testGigaChatFileContentRawBytes)
+	t.Run("ContentBase64Wrapper", testGigaChatFileContentBase64Wrapper)
+	t.Run("RefreshesTokenAfterUnauthorized", testGigaChatFileUploadRefreshesTokenAfterUnauthorized)
+}
+
+func testGigaChatFileUploadMultipart(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/v1/files" {
+			t.Fatalf("path mismatch: got %s", request.URL.Path)
+		}
+		if request.Method != http.MethodPost {
+			t.Fatalf("method mismatch: got %s, want POST", request.Method)
+		}
+		if got := request.Header.Get("Authorization"); got != "Bearer file-upload-token" {
+			t.Fatalf("authorization header mismatch: got %q", got)
+		}
+		if !strings.HasPrefix(request.Header.Get("Content-Type"), "multipart/form-data;") {
+			t.Fatalf("content type mismatch: got %q", request.Header.Get("Content-Type"))
+		}
+		if err := request.ParseMultipartForm(1024); err != nil {
+			t.Fatalf("ParseMultipartForm returned error: %v", err)
+		}
+		if got := request.FormValue("purpose"); got != gigaChatFilePurposeGeneral {
+			t.Fatalf("purpose mismatch: got %q, want %q", got, gigaChatFilePurposeGeneral)
+		}
+		file, header, err := request.FormFile("file")
+		if err != nil {
+			t.Fatalf("FormFile returned error: %v", err)
+		}
+		defer file.Close()
+		if header.Filename != "input.jsonl" {
+			t.Fatalf("filename mismatch: got %q", header.Filename)
+		}
+		body, err := io.ReadAll(file)
+		if err != nil {
+			t.Fatalf("ReadAll returned error: %v", err)
+		}
+		if !bytes.Equal(body, []byte(`{"ok":true}`)) {
+			t.Fatalf("file body mismatch: got %q", string(body))
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("X-Request-ID", "file-upload-request-id")
+		_, _ = w.Write([]byte(`{"id":"file-uploaded","object":"file","bytes":11,"created_at":1780306293,"filename":"input.jsonl","purpose":"general","access_policy":"private"}`))
+	}))
+	defer server.Close()
+
+	provider := newTestGigaChatChatProvider(t, server.URL)
+	key := testGigaChatAccessTokenKey("file-upload-token")
+	contentType := "application/jsonl"
+
+	response, bifrostErr := provider.FileUpload(testBifrostContext(), key, &schemas.BifrostFileUploadRequest{
+		Provider:    schemas.GigaChat,
+		File:        []byte(`{"ok":true}`),
+		Filename:    "input.jsonl",
+		Purpose:     schemas.FilePurposeBatch,
+		ContentType: &contentType,
+	})
+	if bifrostErr != nil {
+		t.Fatalf("FileUpload returned error: %v", bifrostErr)
+	}
+	if response.ID != "file-uploaded" || response.Filename != "input.jsonl" || response.Bytes != 11 {
+		t.Fatalf("unexpected upload response: %#v", response)
+	}
+	if response.Purpose != schemas.FilePurposeBatch {
+		t.Fatalf("purpose mismatch: got %q, want %q", response.Purpose, schemas.FilePurposeBatch)
+	}
+	if response.StorageBackend != schemas.FileStorageAPI {
+		t.Fatalf("storage backend mismatch: got %q", response.StorageBackend)
+	}
+	if response.ExtraFields.ProviderResponseHeaders["X-Request-Id"] != "file-upload-request-id" {
+		t.Fatalf("provider headers mismatch: %#v", response.ExtraFields.ProviderResponseHeaders)
+	}
+}
+
+func testGigaChatFileListRetrieveDelete(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		if got := request.Header.Get("Authorization"); got != "Bearer files-token" {
+			t.Fatalf("authorization header mismatch: got %q", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+
+		switch request.URL.Path {
+		case "/v1/files":
+			if request.Method != http.MethodGet {
+				t.Fatalf("list method mismatch: got %s", request.Method)
+			}
+			_, _ = w.Write([]byte(`{"data":[{"id":"file-1","object":"file","bytes":10,"created_at":1780306293,"filename":"assistant.txt","purpose":"assistant"},{"id":"file-2","object":"file","bytes":20,"created_at":1780306294,"filename":"general.txt","purpose":"general"}]}`))
+		case "/v1/files/file-1":
+			if request.Method != http.MethodGet {
+				t.Fatalf("retrieve method mismatch: got %s", request.Method)
+			}
+			_, _ = w.Write([]byte(`{"id":"file-1","object":"file","bytes":10,"created_at":1780306293,"filename":"assistant.txt","purpose":"assistant"}`))
+		case "/v1/files/file-1/delete":
+			if request.Method != http.MethodPost {
+				t.Fatalf("delete method mismatch: got %s", request.Method)
+			}
+			_, _ = w.Write([]byte(`{"id":"file-1","deleted":true}`))
+		default:
+			t.Fatalf("unexpected path: %s", request.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	provider := newTestGigaChatChatProvider(t, server.URL)
+	key := testGigaChatAccessTokenKey("files-token")
+	ctx := testBifrostContext()
+
+	listResponse, bifrostErr := provider.FileList(ctx, []schemas.Key{key}, &schemas.BifrostFileListRequest{Provider: schemas.GigaChat})
+	if bifrostErr != nil {
+		t.Fatalf("FileList returned error: %v", bifrostErr)
+	}
+	if len(listResponse.Data) != 2 {
+		t.Fatalf("file count mismatch: got %d, want 2", len(listResponse.Data))
+	}
+	if listResponse.Data[0].Purpose != schemas.FilePurposeAssistants {
+		t.Fatalf("assistant purpose mismatch: got %q", listResponse.Data[0].Purpose)
+	}
+	if listResponse.Data[1].Purpose != schemas.FilePurposeUserData {
+		t.Fatalf("general purpose mismatch: got %q", listResponse.Data[1].Purpose)
+	}
+
+	retrieveResponse, bifrostErr := provider.FileRetrieve(ctx, []schemas.Key{key}, &schemas.BifrostFileRetrieveRequest{
+		Provider: schemas.GigaChat,
+		FileID:   "file-1",
+	})
+	if bifrostErr != nil {
+		t.Fatalf("FileRetrieve returned error: %v", bifrostErr)
+	}
+	if retrieveResponse.ID != "file-1" || retrieveResponse.Purpose != schemas.FilePurposeAssistants {
+		t.Fatalf("unexpected retrieve response: %#v", retrieveResponse)
+	}
+
+	deleteResponse, bifrostErr := provider.FileDelete(ctx, []schemas.Key{key}, &schemas.BifrostFileDeleteRequest{
+		Provider: schemas.GigaChat,
+		FileID:   "file-1",
+	})
+	if bifrostErr != nil {
+		t.Fatalf("FileDelete returned error: %v", bifrostErr)
+	}
+	if deleteResponse.ID != "file-1" || !deleteResponse.Deleted || deleteResponse.Object != "file" {
+		t.Fatalf("unexpected delete response: %#v", deleteResponse)
+	}
+}
+
+func testGigaChatFileContentRawBytes(t *testing.T) {
+	t.Parallel()
+
+	wantContent := []byte{0xff, 0xd8, 0xff, 0xdb}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/v1/files/image-file/content" {
+			t.Fatalf("path mismatch: got %s", request.URL.Path)
+		}
+		if request.Method != http.MethodGet {
+			t.Fatalf("method mismatch: got %s, want GET", request.Method)
+		}
+		if got := request.Header.Get("Authorization"); got != "Bearer content-token" {
+			t.Fatalf("authorization header mismatch: got %q", got)
+		}
+		w.Header().Set("Content-Type", "image/jpeg")
+		_, _ = w.Write(wantContent)
+	}))
+	defer server.Close()
+
+	provider := newTestGigaChatChatProvider(t, server.URL)
+	response, bifrostErr := provider.FileContent(testBifrostContext(), []schemas.Key{testGigaChatAccessTokenKey("content-token")}, &schemas.BifrostFileContentRequest{
+		Provider: schemas.GigaChat,
+		FileID:   "image-file",
+	})
+	if bifrostErr != nil {
+		t.Fatalf("FileContent returned error: %v", bifrostErr)
+	}
+	if !bytes.Equal(response.Content, wantContent) {
+		t.Fatalf("content mismatch: got %v, want %v", response.Content, wantContent)
+	}
+	if response.ContentType != "image/jpeg" {
+		t.Fatalf("content type mismatch: got %q", response.ContentType)
+	}
+}
+
+func testGigaChatFileContentBase64Wrapper(t *testing.T) {
+	t.Parallel()
+
+	encoded := base64.StdEncoding.EncodeToString([]byte("decoded file content"))
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/v1/files/wrapped-file/content" {
+			t.Fatalf("path mismatch: got %s", request.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"content":"` + encoded + `"}`))
+	}))
+	defer server.Close()
+
+	provider := newTestGigaChatChatProvider(t, server.URL)
+	response, bifrostErr := provider.FileContent(testBifrostContext(), []schemas.Key{testGigaChatAccessTokenKey("wrapper-token")}, &schemas.BifrostFileContentRequest{
+		Provider: schemas.GigaChat,
+		FileID:   "wrapped-file",
+	})
+	if bifrostErr != nil {
+		t.Fatalf("FileContent returned error: %v", bifrostErr)
+	}
+	if string(response.Content) != "decoded file content" {
+		t.Fatalf("content mismatch: got %q", string(response.Content))
+	}
+	if response.ContentType != "application/octet-stream" {
+		t.Fatalf("content type mismatch: got %q", response.ContentType)
+	}
+}
+
+func testGigaChatFileUploadRefreshesTokenAfterUnauthorized(t *testing.T) {
+	t.Parallel()
+
+	var tokenRequests atomic.Int32
+	var uploadRequests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/oauth":
+			tokenIndex := tokenRequests.Add(1)
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"access_token":"files-token-` + formatInt32(tokenIndex) + `","expires_at":1893456000}`))
+		case "/v1/files":
+			uploadIndex := uploadRequests.Add(1)
+			wantAuthorization := "Bearer files-token-" + formatInt32(uploadIndex)
+			if got := request.Header.Get("Authorization"); got != wantAuthorization {
+				t.Fatalf("authorization header mismatch on request %d: got %q, want %q", uploadIndex, got, wantAuthorization)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			if uploadIndex == 1 {
+				w.WriteHeader(http.StatusUnauthorized)
+				_, _ = w.Write([]byte(`{"status":401,"message":"expired token"}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{"id":"file-refreshed","object":"file","bytes":4,"created_at":1780306293,"filename":"file.txt","purpose":"general"}`))
+		default:
+			t.Fatalf("unexpected path: %s", request.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	provider := newTestGigaChatChatProvider(t, server.URL)
+	key := testGigaChatOAuthKey(server.URL+"/oauth", "", "test-credentials")
+
+	response, bifrostErr := provider.FileUpload(testBifrostContext(), key, &schemas.BifrostFileUploadRequest{
+		Provider: schemas.GigaChat,
+		File:     []byte("test"),
+		Filename: "file.txt",
+		Purpose:  schemas.FilePurposeUserData,
+	})
+	if bifrostErr != nil {
+		t.Fatalf("FileUpload returned error: %v", bifrostErr)
+	}
+	if response.ID != "file-refreshed" {
+		t.Fatalf("unexpected response: %#v", response)
+	}
+	if tokenRequests.Load() != 2 {
+		t.Fatalf("token request count mismatch: got %d, want 2", tokenRequests.Load())
+	}
+	if uploadRequests.Load() != 2 {
+		t.Fatalf("upload request count mismatch: got %d, want 2", uploadRequests.Load())
 	}
 }
