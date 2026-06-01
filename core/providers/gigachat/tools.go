@@ -17,6 +17,28 @@ var gigaChatBuiltInFunctionNames = map[string]struct{}{
 	"text2model3d":     {},
 }
 
+const (
+	gigaChatResponsesUserFunctionNamePrefix        = "__bifrost_gigachat_user_"
+	gigaChatResponsesToolTypeURLContentExtraction  = "url_content_extraction"
+	gigaChatResponsesToolTypeModel3DGenerate       = "model_3d_generate"
+	gigaChatResponsesSearchContextSizeFlagPrefix   = "search_context_size:"
+	gigaChatResponsesUserLocationUserInfoField     = "user_location"
+	gigaChatResponsesCodeInterpreterToolConfigType = "code_interpreter"
+	gigaChatResponsesImageGenerateToolConfigType   = "image_generation"
+	gigaChatResponsesURLExtractionToolConfigType   = "web_fetch"
+	gigaChatResponsesModel3DGenerateToolConfigType = "model_3d_generate"
+)
+
+var gigaChatResponsesReservedFunctionNames = map[string]struct{}{
+	"code_interpreter":       {},
+	"image_generate":         {},
+	"image_generation":       {},
+	"model_3d_generate":      {},
+	"url_content_extraction": {},
+	"web_search":             {},
+	"web_search_preview":     {},
+}
+
 // GigaChat built-ins are service-side functions with provider-specific side effects.
 // They are intentionally rejected through neutral Bifrost tool fields until the provider has a scoped API for them.
 func validateGigaChatFunctionName(name string) error {
@@ -89,6 +111,11 @@ func toGigaChatChatFunctions(tools []schemas.ChatTool) ([]GigaChatFunction, map[
 	return functions, functionNames, nil
 }
 
+type gigaChatResponsesToolsConversion struct {
+	Tools    []GigaChatResponsesTool
+	UserInfo map[string]interface{}
+}
+
 func toGigaChatChatFunctionCall(toolChoice *schemas.ChatToolChoice, functionNames map[string]struct{}) (interface{}, error) {
 	if toolChoice == nil {
 		return nil, nil
@@ -135,45 +162,280 @@ func toGigaChatChatFunctionCall(toolChoice *schemas.ChatToolChoice, functionName
 	}
 }
 
-func toGigaChatResponsesTools(tools []schemas.ResponsesTool) ([]GigaChatResponsesTool, error) {
+func toGigaChatResponsesTools(tools []schemas.ResponsesTool) (*gigaChatResponsesToolsConversion, error) {
+	converted := &gigaChatResponsesToolsConversion{}
 	if len(tools) == 0 {
-		return nil, nil
+		return converted, nil
 	}
 
 	specifications := make([]GigaChatResponsesFunctionSpecification, 0, len(tools))
+	functionNames := make(map[string]string, len(tools))
+	functionsToolIndex := -1
 	for index, tool := range tools {
-		if tool.Type != schemas.ResponsesToolTypeFunction {
-			return nil, fmt.Errorf("tools[%d]: GigaChat Responses supports user-defined function tools only, got %q", index, tool.Type)
+		switch {
+		case tool.Type == schemas.ResponsesToolTypeFunction:
+			specification, err := toGigaChatResponsesFunctionSpecification(index, tool, functionNames)
+			if err != nil {
+				return nil, err
+			}
+			if functionsToolIndex == -1 {
+				functionsToolIndex = len(converted.Tools)
+				converted.Tools = append(converted.Tools, GigaChatResponsesTool{})
+			}
+			specifications = append(specifications, *specification)
+		case isGigaChatResponsesWebSearchToolType(tool.Type):
+			gigaChatTool, userInfo, err := toGigaChatResponsesWebSearchTool(index, tool)
+			if err != nil {
+				return nil, err
+			}
+			if len(userInfo) > 0 {
+				if converted.UserInfo != nil {
+					return nil, fmt.Errorf("tools[%d]: multiple web_search user_location configs are not supported by GigaChat Responses", index)
+				}
+				converted.UserInfo = userInfo
+			}
+			converted.Tools = append(converted.Tools, *gigaChatTool)
+		case tool.Type == schemas.ResponsesToolTypeCodeInterpreter:
+			gigaChatTool, err := toGigaChatResponsesCodeInterpreterTool(index, tool)
+			if err != nil {
+				return nil, err
+			}
+			converted.Tools = append(converted.Tools, *gigaChatTool)
+		case tool.Type == schemas.ResponsesToolTypeImageGeneration:
+			gigaChatTool, err := toGigaChatResponsesImageGenerateTool(index, tool)
+			if err != nil {
+				return nil, err
+			}
+			converted.Tools = append(converted.Tools, *gigaChatTool)
+		case tool.Type == schemas.ResponsesToolTypeWebFetch || string(tool.Type) == gigaChatResponsesToolTypeURLContentExtraction:
+			gigaChatTool, err := toGigaChatResponsesURLContentExtractionTool(index, tool)
+			if err != nil {
+				return nil, err
+			}
+			converted.Tools = append(converted.Tools, *gigaChatTool)
+		case string(tool.Type) == gigaChatResponsesToolTypeModel3DGenerate:
+			gigaChatTool, err := toGigaChatResponsesModel3DGenerateTool(index, tool)
+			if err != nil {
+				return nil, err
+			}
+			converted.Tools = append(converted.Tools, *gigaChatTool)
+		default:
+			return nil, fmt.Errorf("tools[%d]: GigaChat Responses does not support tool type %q", index, tool.Type)
 		}
-		if tool.Name == nil || strings.TrimSpace(*tool.Name) == "" {
-			return nil, fmt.Errorf("tools[%d]: function tool name is required", index)
-		}
-		name := strings.TrimSpace(*tool.Name)
-		if err := validateGigaChatFunctionName(name); err != nil {
-			return nil, fmt.Errorf("tools[%d]: %w", index, err)
-		}
-		if tool.ResponsesToolFunction == nil {
-			return nil, fmt.Errorf("tools[%d]: function tool definition is required", index)
-		}
-		if err := validateGigaChatFunctionParameters(tool.ResponsesToolFunction.Parameters); err != nil {
-			return nil, fmt.Errorf("tools[%d]: %w", index, err)
-		}
-		if err := validateGigaChatFunctionStrict(tool.ResponsesToolFunction.Strict); err != nil {
-			return nil, fmt.Errorf("tools[%d]: %w", index, err)
-		}
-
-		specifications = append(specifications, GigaChatResponsesFunctionSpecification{
-			Name:        name,
-			Description: tool.Description,
-			Parameters:  tool.ResponsesToolFunction.Parameters,
-		})
 	}
 
-	return []GigaChatResponsesTool{{
-		Functions: &GigaChatResponsesFunctionsTool{
+	if len(specifications) > 0 {
+		converted.Tools[functionsToolIndex].Functions = &GigaChatResponsesFunctionsTool{
 			Specifications: specifications,
-		},
-	}}, nil
+		}
+	}
+
+	return converted, nil
+}
+
+func toGigaChatResponsesFunctionSpecification(index int, tool schemas.ResponsesTool, functionNames map[string]string) (*GigaChatResponsesFunctionSpecification, error) {
+	if tool.Name == nil || strings.TrimSpace(*tool.Name) == "" {
+		return nil, fmt.Errorf("tools[%d]: function tool name is required", index)
+	}
+	name := strings.TrimSpace(*tool.Name)
+	if strings.HasPrefix(name, gigaChatResponsesUserFunctionNamePrefix) {
+		return nil, fmt.Errorf("tools[%d]: function tool name %q uses a GigaChat compatibility-reserved prefix", index, name)
+	}
+	if err := validateGigaChatFunctionName(name); err != nil {
+		return nil, fmt.Errorf("tools[%d]: %w", index, err)
+	}
+	if tool.ResponsesToolFunction == nil {
+		return nil, fmt.Errorf("tools[%d]: function tool definition is required", index)
+	}
+	if err := validateGigaChatFunctionParameters(tool.ResponsesToolFunction.Parameters); err != nil {
+		return nil, fmt.Errorf("tools[%d]: %w", index, err)
+	}
+	if err := validateGigaChatFunctionStrict(tool.ResponsesToolFunction.Strict); err != nil {
+		return nil, fmt.Errorf("tools[%d]: %w", index, err)
+	}
+
+	gigaChatName := toGigaChatResponsesFunctionName(name)
+	if existing, exists := functionNames[gigaChatName]; exists {
+		return nil, fmt.Errorf("tools[%d]: duplicate function tool name %q conflicts with %q after GigaChat compatibility remapping", index, name, existing)
+	}
+	functionNames[gigaChatName] = name
+
+	return &GigaChatResponsesFunctionSpecification{
+		Name:        gigaChatName,
+		Description: tool.Description,
+		Parameters:  tool.ResponsesToolFunction.Parameters,
+	}, nil
+}
+
+func toGigaChatResponsesFunctionName(name string) string {
+	trimmed := strings.TrimSpace(name)
+	if _, ok := gigaChatResponsesReservedFunctionNames[trimmed]; ok {
+		return gigaChatResponsesUserFunctionNamePrefix + trimmed
+	}
+	return trimmed
+}
+
+func toBifrostGigaChatResponsesFunctionName(name string) string {
+	trimmed := strings.TrimSpace(name)
+	if !strings.HasPrefix(trimmed, gigaChatResponsesUserFunctionNamePrefix) {
+		return trimmed
+	}
+	original := strings.TrimPrefix(trimmed, gigaChatResponsesUserFunctionNamePrefix)
+	if _, ok := gigaChatResponsesReservedFunctionNames[original]; ok {
+		return original
+	}
+	return trimmed
+}
+
+func isGigaChatResponsesWebSearchToolType(toolType schemas.ResponsesToolType) bool {
+	value := strings.TrimSpace(string(toolType))
+	return value == string(schemas.ResponsesToolTypeWebSearch) ||
+		value == string(schemas.ResponsesToolTypeWebSearchPreview) ||
+		strings.HasPrefix(value, "web_search_")
+}
+
+func toGigaChatResponsesWebSearchTool(index int, tool schemas.ResponsesTool) (*GigaChatResponsesTool, map[string]interface{}, error) {
+	webSearch := &GigaChatResponsesWebSearchTool{
+		Type: schemas.Ptr(toGigaChatResponsesWebSearchType(tool.Type)),
+	}
+	var userInfo map[string]interface{}
+
+	if tool.ResponsesToolWebSearch != nil {
+		if tool.ResponsesToolWebSearch.Filters != nil {
+			return nil, nil, fmt.Errorf("tools[%d]: web_search filters are not supported by GigaChat Responses", index)
+		}
+		if len(tool.ResponsesToolWebSearch.SearchContentTypes) > 0 {
+			return nil, nil, fmt.Errorf("tools[%d]: web_search search_content_types are not supported by GigaChat Responses", index)
+		}
+		if tool.ResponsesToolWebSearch.ExternalWebAccess != nil {
+			return nil, nil, fmt.Errorf("tools[%d]: web_search external_web_access is not supported by GigaChat Responses", index)
+		}
+		if tool.ResponsesToolWebSearch.MaxUses != nil {
+			return nil, nil, fmt.Errorf("tools[%d]: web_search max_uses is not supported by GigaChat Responses", index)
+		}
+		if tool.ResponsesToolWebSearch.SearchContextSize != nil && strings.TrimSpace(*tool.ResponsesToolWebSearch.SearchContextSize) != "" {
+			webSearch.Flags = append(webSearch.Flags, gigaChatResponsesSearchContextSizeFlagPrefix+strings.TrimSpace(*tool.ResponsesToolWebSearch.SearchContextSize))
+		}
+		if tool.ResponsesToolWebSearch.UserLocation != nil {
+			userInfo = toGigaChatResponsesUserInfo(tool.ResponsesToolWebSearch.UserLocation)
+		}
+	}
+	if tool.ResponsesToolWebSearchPreview != nil {
+		if tool.ResponsesToolWebSearchPreview.SearchContextSize != nil && strings.TrimSpace(*tool.ResponsesToolWebSearchPreview.SearchContextSize) != "" {
+			webSearch.Flags = append(webSearch.Flags, gigaChatResponsesSearchContextSizeFlagPrefix+strings.TrimSpace(*tool.ResponsesToolWebSearchPreview.SearchContextSize))
+		}
+		if tool.ResponsesToolWebSearchPreview.UserLocation != nil {
+			userInfo = toGigaChatResponsesUserInfo(tool.ResponsesToolWebSearchPreview.UserLocation)
+		}
+	}
+
+	return &GigaChatResponsesTool{WebSearch: webSearch}, userInfo, nil
+}
+
+func toGigaChatResponsesWebSearchType(toolType schemas.ResponsesToolType) string {
+	value := strings.TrimSpace(string(toolType))
+	if strings.HasPrefix(value, string(schemas.ResponsesToolTypeWebSearchPreview)) {
+		return string(schemas.ResponsesToolTypeWebSearchPreview)
+	}
+	return string(schemas.ResponsesToolTypeWebSearch)
+}
+
+func toGigaChatResponsesUserInfo(location *schemas.ResponsesToolWebSearchUserLocation) map[string]interface{} {
+	if location == nil {
+		return nil
+	}
+	userLocation := make(map[string]interface{})
+	if location.Type != nil && strings.TrimSpace(*location.Type) != "" {
+		userLocation["type"] = strings.TrimSpace(*location.Type)
+	}
+	if location.City != nil && strings.TrimSpace(*location.City) != "" {
+		userLocation["city"] = strings.TrimSpace(*location.City)
+	}
+	if location.Country != nil && strings.TrimSpace(*location.Country) != "" {
+		userLocation["country"] = strings.TrimSpace(*location.Country)
+	}
+	if location.Region != nil && strings.TrimSpace(*location.Region) != "" {
+		userLocation["region"] = strings.TrimSpace(*location.Region)
+	}
+	if location.Timezone != nil && strings.TrimSpace(*location.Timezone) != "" {
+		userLocation["timezone"] = strings.TrimSpace(*location.Timezone)
+	}
+	if len(userLocation) == 0 {
+		return nil
+	}
+	return map[string]interface{}{gigaChatResponsesUserLocationUserInfoField: userLocation}
+}
+
+func toGigaChatResponsesCodeInterpreterTool(index int, tool schemas.ResponsesTool) (*GigaChatResponsesTool, error) {
+	config, err := toGigaChatResponsesToolConfigMap(tool.ResponsesToolCodeInterpreter, gigaChatResponsesCodeInterpreterToolConfigType)
+	if err != nil {
+		return nil, fmt.Errorf("tools[%d]: code_interpreter config is invalid: %w", index, err)
+	}
+	return &GigaChatResponsesTool{CodeInterpreter: config}, nil
+}
+
+func toGigaChatResponsesImageGenerateTool(index int, tool schemas.ResponsesTool) (*GigaChatResponsesTool, error) {
+	config, err := toGigaChatResponsesToolConfigMap(tool.ResponsesToolImageGeneration, gigaChatResponsesImageGenerateToolConfigType)
+	if err != nil {
+		return nil, fmt.Errorf("tools[%d]: image_generation config is invalid: %w", index, err)
+	}
+	return &GigaChatResponsesTool{ImageGenerate: config}, nil
+}
+
+func toGigaChatResponsesURLContentExtractionTool(index int, tool schemas.ResponsesTool) (*GigaChatResponsesTool, error) {
+	configType := gigaChatResponsesURLExtractionToolConfigType
+	if string(tool.Type) == gigaChatResponsesToolTypeURLContentExtraction {
+		configType = gigaChatResponsesToolTypeURLContentExtraction
+	}
+	config, err := toGigaChatResponsesToolConfigMap(tool.ResponsesToolWebFetch, configType)
+	if err != nil {
+		return nil, fmt.Errorf("tools[%d]: url_content_extraction config is invalid: %w", index, err)
+	}
+	addGigaChatResponsesCommonToolFields(config, tool)
+	return &GigaChatResponsesTool{URLContentExtraction: config}, nil
+}
+
+func toGigaChatResponsesModel3DGenerateTool(index int, tool schemas.ResponsesTool) (*GigaChatResponsesTool, error) {
+	config, err := toGigaChatResponsesToolConfigMap(nil, gigaChatResponsesModel3DGenerateToolConfigType)
+	if err != nil {
+		return nil, fmt.Errorf("tools[%d]: model_3d_generate config is invalid: %w", index, err)
+	}
+	addGigaChatResponsesCommonToolFields(config, tool)
+	return &GigaChatResponsesTool{Model3DGenerate: config}, nil
+}
+
+func toGigaChatResponsesToolConfigMap(value interface{}, toolType string) (map[string]interface{}, error) {
+	config := map[string]interface{}{"type": toolType}
+	if value == nil {
+		return config, nil
+	}
+
+	raw, err := schemas.MarshalSorted(value)
+	if err != nil {
+		return nil, err
+	}
+	var fields map[string]interface{}
+	if err := schemas.Unmarshal(raw, &fields); err != nil {
+		return nil, err
+	}
+	for name, fieldValue := range fields {
+		if fieldValue != nil {
+			config[name] = fieldValue
+		}
+	}
+	return config, nil
+}
+
+func addGigaChatResponsesCommonToolFields(config map[string]interface{}, tool schemas.ResponsesTool) {
+	if config == nil {
+		return
+	}
+	if tool.Name != nil && strings.TrimSpace(*tool.Name) != "" {
+		config["name"] = strings.TrimSpace(*tool.Name)
+	}
+	if tool.Description != nil && strings.TrimSpace(*tool.Description) != "" {
+		config["description"] = strings.TrimSpace(*tool.Description)
+	}
 }
 
 func toGigaChatResponsesToolConfig(toolChoice *schemas.ResponsesToolChoice, tools []schemas.ResponsesTool) (*GigaChatResponsesToolConfig, error) {
@@ -209,6 +471,7 @@ func toGigaChatResponsesToolConfig(toolChoice *schemas.ResponsesToolChoice, tool
 		if !gigaChatResponsesToolNameExists(tools, name) {
 			return nil, fmt.Errorf("tool_choice function %q must match a declared GigaChat function tool", name)
 		}
+		name = toGigaChatResponsesFunctionName(name)
 		return &GigaChatResponsesToolConfig{
 			Mode:         "forced",
 			FunctionName: &name,

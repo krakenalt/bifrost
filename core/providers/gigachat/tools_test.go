@@ -17,7 +17,9 @@ func testGigaChatTools(t *testing.T) {
 	t.Run("ChatMapsFunctionToolsAndHistory", testGigaChatToolsChatMapsFunctionToolsAndHistory)
 	t.Run("ChatToolChoiceVariants", testGigaChatToolsChatToolChoiceVariants)
 	t.Run("ChatRejectsUnsupportedPolicy", testGigaChatToolsChatRejectsUnsupportedPolicy)
+	t.Run("ResponsesMapsBuiltInTools", testGigaChatToolsResponsesMapsBuiltInTools)
 	t.Run("ResponsesToolChoiceVariants", testGigaChatToolsResponsesToolChoiceVariants)
+	t.Run("ResponsesRemapsReservedFunctionNames", testGigaChatToolsResponsesRemapsReservedFunctionNames)
 	t.Run("ResponsesRejectsUnsupportedPolicy", testGigaChatToolsResponsesRejectsUnsupportedPolicy)
 }
 
@@ -259,6 +261,111 @@ func testGigaChatToolsChatRejectsUnsupportedPolicy(t *testing.T) {
 	}
 }
 
+func testGigaChatToolsResponsesMapsBuiltInTools(t *testing.T) {
+	t.Parallel()
+
+	functionName := "web_search"
+	imageModel := "Kandinsky"
+	imageSize := "1024x1024"
+	searchContextSize := "high"
+	city := "Moscow"
+	country := "RU"
+	maxContentTokens := 2000
+	request := testGigaChatResponsesToolRequest(t, functionName)
+	request.Params.Tools = append(request.Params.Tools,
+		schemas.ResponsesTool{
+			Type: schemas.ResponsesToolTypeWebSearchPreview,
+			ResponsesToolWebSearchPreview: &schemas.ResponsesToolWebSearchPreview{
+				SearchContextSize: &searchContextSize,
+				UserLocation: &schemas.ResponsesToolWebSearchUserLocation{
+					City:    &city,
+					Country: &country,
+				},
+			},
+		},
+		schemas.ResponsesTool{
+			Type: schemas.ResponsesToolTypeCodeInterpreter,
+			ResponsesToolCodeInterpreter: &schemas.ResponsesToolCodeInterpreter{
+				Container: map[string]interface{}{"type": "auto"},
+			},
+		},
+		schemas.ResponsesTool{
+			Type: schemas.ResponsesToolTypeImageGeneration,
+			ResponsesToolImageGeneration: &schemas.ResponsesToolImageGeneration{
+				Model: &imageModel,
+				Size:  &imageSize,
+			},
+		},
+		schemas.ResponsesTool{
+			Type: schemas.ResponsesToolTypeWebFetch,
+			ResponsesToolWebFetch: &schemas.ResponsesToolWebFetch{
+				MaxContentTokens: &maxContentTokens,
+			},
+		},
+		schemas.ResponsesTool{
+			Type:        schemas.ResponsesToolType("model_3d_generate"),
+			Name:        schemas.Ptr("make_model"),
+			Description: schemas.Ptr("Generate a 3D model."),
+		},
+	)
+
+	gigaChatReq, err := ToGigaChatResponsesRequest(request)
+	if err != nil {
+		t.Fatalf("ToGigaChatResponsesRequest returned error: %v", err)
+	}
+	if len(gigaChatReq.Tools) != 6 {
+		t.Fatalf("tool count mismatch: got %d, tools=%#v", len(gigaChatReq.Tools), gigaChatReq.Tools)
+	}
+	functionsTool := gigaChatReq.Tools[0]
+	if functionsTool.Functions == nil || len(functionsTool.Functions.Specifications) != 1 {
+		t.Fatalf("functions tool mismatch: %#v", functionsTool)
+	}
+	if got := functionsTool.Functions.Specifications[0].Name; got != "__bifrost_gigachat_user_web_search" {
+		t.Fatalf("function remap mismatch: got %q", got)
+	}
+
+	webSearchTool := gigaChatReq.Tools[1]
+	if webSearchTool.WebSearch == nil || webSearchTool.WebSearch.Type == nil || *webSearchTool.WebSearch.Type != "web_search_preview" {
+		t.Fatalf("web_search tool mismatch: %#v", webSearchTool)
+	}
+	if len(webSearchTool.WebSearch.Flags) != 1 || webSearchTool.WebSearch.Flags[0] != "search_context_size:high" {
+		t.Fatalf("web_search flags mismatch: %#v", webSearchTool.WebSearch.Flags)
+	}
+	userLocation, ok := gigaChatReq.UserInfo["user_location"].(map[string]interface{})
+	if !ok || userLocation["city"] != city || userLocation["country"] != country {
+		t.Fatalf("user_info mismatch: %#v", gigaChatReq.UserInfo)
+	}
+
+	codeTool := gigaChatReq.Tools[2]
+	if codeTool.CodeInterpreter["type"] != "code_interpreter" {
+		t.Fatalf("code_interpreter config mismatch: %#v", codeTool.CodeInterpreter)
+	}
+	container, ok := codeTool.CodeInterpreter["container"].(map[string]interface{})
+	if !ok || container["type"] != "auto" {
+		t.Fatalf("code_interpreter container mismatch: %#v", codeTool.CodeInterpreter)
+	}
+
+	imageTool := gigaChatReq.Tools[3]
+	if imageTool.ImageGenerate["type"] != "image_generation" ||
+		imageTool.ImageGenerate["model"] != imageModel ||
+		imageTool.ImageGenerate["size"] != imageSize {
+		t.Fatalf("image_generate config mismatch: %#v", imageTool.ImageGenerate)
+	}
+
+	urlTool := gigaChatReq.Tools[4]
+	if urlTool.URLContentExtraction["type"] != "web_fetch" ||
+		urlTool.URLContentExtraction["max_content_tokens"] != float64(maxContentTokens) {
+		t.Fatalf("url_content_extraction config mismatch: %#v", urlTool.URLContentExtraction)
+	}
+
+	model3DTool := gigaChatReq.Tools[5]
+	if model3DTool.Model3DGenerate["type"] != "model_3d_generate" ||
+		model3DTool.Model3DGenerate["name"] != "make_model" ||
+		model3DTool.Model3DGenerate["description"] != "Generate a 3D model." {
+		t.Fatalf("model_3d_generate config mismatch: %#v", model3DTool.Model3DGenerate)
+	}
+}
+
 func testGigaChatToolsResponsesToolChoiceVariants(t *testing.T) {
 	t.Parallel()
 
@@ -327,6 +434,54 @@ func testGigaChatToolsResponsesToolChoiceVariants(t *testing.T) {
 	}
 }
 
+func testGigaChatToolsResponsesRemapsReservedFunctionNames(t *testing.T) {
+	t.Parallel()
+
+	functionName := "web_search"
+	arguments := `{"query":"GigaChat"}`
+	request := testGigaChatResponsesToolRequest(t, functionName)
+	request.Input = append(request.Input, schemas.ResponsesMessage{
+		Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall),
+		ResponsesToolMessage: &schemas.ResponsesToolMessage{
+			Name:      &functionName,
+			CallID:    schemas.Ptr("state-web-search"),
+			Arguments: &arguments,
+		},
+	})
+
+	gigaChatReq, err := ToGigaChatResponsesRequest(request)
+	if err != nil {
+		t.Fatalf("ToGigaChatResponsesRequest returned error: %v", err)
+	}
+	if got := gigaChatReq.Tools[0].Functions.Specifications[0].Name; got != "__bifrost_gigachat_user_web_search" {
+		t.Fatalf("function specification name mismatch: got %q", got)
+	}
+	if gigaChatReq.Messages[1].FunctionCall == nil || gigaChatReq.Messages[1].FunctionCall.Name != "__bifrost_gigachat_user_web_search" {
+		t.Fatalf("function call remap mismatch: %#v", gigaChatReq.Messages[1].FunctionCall)
+	}
+
+	response := ToBifrostResponsesResponse(schemas.GigaChat, &GigaChatResponsesResponse{
+		ID:    "resp-1",
+		Model: "GigaChat-2",
+		Messages: []GigaChatResponsesMessage{{
+			Role:         "assistant",
+			ToolsStateID: schemas.Ptr("state-web-search"),
+			Content: []GigaChatResponsesContentPart{{
+				FunctionCall: &GigaChatResponsesFunctionCall{
+					Name:      "__bifrost_gigachat_user_web_search",
+					Arguments: map[string]interface{}{"query": "GigaChat"},
+				},
+			}},
+		}},
+	})
+	if response == nil || len(response.Output) != 1 || response.Output[0].ResponsesToolMessage == nil || response.Output[0].ResponsesToolMessage.Name == nil {
+		t.Fatalf("response output mismatch: %#v", response)
+	}
+	if got := *response.Output[0].ResponsesToolMessage.Name; got != functionName {
+		t.Fatalf("function response name mismatch: got %q", got)
+	}
+}
+
 func testGigaChatToolsResponsesRejectsUnsupportedPolicy(t *testing.T) {
 	t.Parallel()
 
@@ -359,14 +514,16 @@ func testGigaChatToolsResponsesRejectsUnsupportedPolicy(t *testing.T) {
 			wantErr: "strict mode",
 		},
 		{
-			name: "OpenAIBuiltInTool",
+			name: "UnsupportedHostedTool",
 			mutate: func(request *schemas.BifrostResponsesRequest) {
 				request.Params.Tools = []schemas.ResponsesTool{{
-					Type:                   schemas.ResponsesToolTypeWebSearch,
-					ResponsesToolWebSearch: &schemas.ResponsesToolWebSearch{},
+					Type: schemas.ResponsesToolTypeFileSearch,
+					ResponsesToolFileSearch: &schemas.ResponsesToolFileSearch{
+						VectorStoreIDs: []string{"vs_123"},
+					},
 				}}
 			},
-			wantErr: "function tools only",
+			wantErr: "does not support tool type",
 		},
 		{
 			name: "ParallelToolCalls",

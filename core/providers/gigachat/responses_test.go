@@ -34,7 +34,7 @@ func testGigaChatResponsesRequestConversion(t *testing.T) {
 	t.Run("InstructionsAndMultiTurnInput", testGigaChatResponsesInstructionsAndMultiTurnInput)
 	t.Run("FunctionToolAndToolHistory", testGigaChatResponsesFunctionToolAndToolHistory)
 	t.Run("StructuredOutput", testGigaChatResponsesStructuredOutput)
-	t.Run("RejectsUnsupportedBuiltInTools", testGigaChatResponsesRejectsUnsupportedBuiltInTools)
+	t.Run("RejectsUnsupportedHostedTools", testGigaChatResponsesRejectsUnsupportedHostedTools)
 	t.Run("RejectsUnsupportedParams", testGigaChatResponsesRejectsUnsupportedParams)
 }
 
@@ -293,22 +293,24 @@ func testGigaChatResponsesStructuredOutput(t *testing.T) {
 	}
 }
 
-func testGigaChatResponsesRejectsUnsupportedBuiltInTools(t *testing.T) {
+func testGigaChatResponsesRejectsUnsupportedHostedTools(t *testing.T) {
 	t.Parallel()
 
 	request := testGigaChatResponsesRequest()
 	request.Params = &schemas.ResponsesParameters{
 		Tools: []schemas.ResponsesTool{{
-			Type:                   schemas.ResponsesToolTypeWebSearch,
-			ResponsesToolWebSearch: &schemas.ResponsesToolWebSearch{},
+			Type: schemas.ResponsesToolTypeFileSearch,
+			ResponsesToolFileSearch: &schemas.ResponsesToolFileSearch{
+				VectorStoreIDs: []string{"vs_123"},
+			},
 		}},
 	}
 
 	_, err := ToGigaChatResponsesRequest(request)
 	if err == nil {
-		t.Fatal("expected unsupported built-in tool error, got nil")
+		t.Fatal("expected unsupported hosted tool error, got nil")
 	}
-	if !strings.Contains(err.Error(), "function tools only") || !strings.Contains(err.Error(), "web_search") {
+	if !strings.Contains(err.Error(), "does not support tool type") || !strings.Contains(err.Error(), "file_search") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }

@@ -1,3 +1,4 @@
+- feat: map GigaChat Responses built-in tools
 - feat: add GigaChat Responses built-in tool DTOs
 - feat: implement GigaChat Batches API
 - feat: add GigaChat batch conversion helpers

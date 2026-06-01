@@ -293,7 +293,7 @@ func toGigaChatLegacyFunctionCall(functionCall *GigaChatResponsesFunctionCall) *
 	}
 	arguments := json.RawMessage(stringifyGigaChatResponsesPayload(functionCall.Arguments))
 	return &GigaChatFunctionCall{
-		Name:      functionCall.Name,
+		Name:      toBifrostGigaChatResponsesFunctionName(functionCall.Name),
 		Arguments: arguments,
 	}
 }
@@ -428,7 +428,7 @@ func toBifrostGigaChatResponsesFunctionCall(messageID *string, toolsStateID *str
 		Status: schemas.Ptr("completed"),
 		ResponsesToolMessage: &schemas.ResponsesToolMessage{
 			CallID:    &callID,
-			Name:      schemas.Ptr(strings.TrimSpace(functionCall.Name)),
+			Name:      schemas.Ptr(toBifrostGigaChatResponsesFunctionName(functionCall.Name)),
 			Arguments: &arguments,
 		},
 	}
@@ -449,7 +449,7 @@ func toBifrostGigaChatResponsesFunctionResult(messageID *string, toolsStateID *s
 		Status: schemas.Ptr("completed"),
 		ResponsesToolMessage: &schemas.ResponsesToolMessage{
 			CallID: &callID,
-			Name:   schemas.Ptr(strings.TrimSpace(functionResult.Name)),
+			Name:   schemas.Ptr(toBifrostGigaChatResponsesFunctionName(functionResult.Name)),
 			Output: &schemas.ResponsesToolMessageOutputStruct{
 				ResponsesToolCallOutputStr: &output,
 			},
@@ -571,11 +571,14 @@ func applyGigaChatResponsesParams(gigaChatReq *GigaChatResponsesRequest, params 
 		gigaChatReq.ModelOptions = modelOptions
 	}
 
-	tools, err := toGigaChatResponsesTools(params.Tools)
+	toolsConversion, err := toGigaChatResponsesTools(params.Tools)
 	if err != nil {
 		return err
 	}
-	gigaChatReq.Tools = tools
+	gigaChatReq.Tools = toolsConversion.Tools
+	if len(toolsConversion.UserInfo) > 0 {
+		gigaChatReq.UserInfo = toolsConversion.UserInfo
+	}
 
 	toolConfig, err := toGigaChatResponsesToolConfig(params.ToolChoice, params.Tools)
 	if err != nil {
@@ -643,7 +646,7 @@ func toGigaChatResponsesFunctionCallMessage(message schemas.ResponsesMessage) ([
 		return nil, err
 	}
 	functionCall := &GigaChatResponsesFunctionCall{
-		Name:      strings.TrimSpace(*message.ResponsesToolMessage.Name),
+		Name:      toGigaChatResponsesFunctionName(*message.ResponsesToolMessage.Name),
 		Arguments: arguments,
 	}
 	return []GigaChatResponsesMessage{{
@@ -675,7 +678,7 @@ func toGigaChatResponsesFunctionResultMessage(message schemas.ResponsesMessage) 
 		ToolsStateID: toGigaChatResponsesToolsStateID(message),
 		Content: []GigaChatResponsesContentPart{{
 			FunctionResult: &GigaChatResponsesFunctionResult{
-				Name:   strings.TrimSpace(*message.ResponsesToolMessage.Name),
+				Name:   toGigaChatResponsesFunctionName(*message.ResponsesToolMessage.Name),
 				Result: result,
 			},
 		}},
