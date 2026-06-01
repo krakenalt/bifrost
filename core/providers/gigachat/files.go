@@ -5,12 +5,15 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"mime"
 	"mime/multipart"
 	"net/http"
 	"net/textproto"
 	"net/url"
+	"path/filepath"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	schemas "github.com/maximhq/bifrost/core/schemas"
@@ -311,15 +314,13 @@ func buildGigaChatFileUploadBody(request *schemas.BifrostFileUploadRequest) ([]b
 		return nil, "", providerUtils.NewBifrostOperationError("failed to write purpose field", err)
 	}
 
-	filename := strings.TrimSpace(request.Filename)
-	if filename == "" {
-		filename = "file"
-	}
+	contentType := resolveGigaChatFileUploadContentType(request.ContentType, request.Filename, request.File)
+	filename := resolveGigaChatFileUploadFilename(request.Filename, contentType)
 
 	partHeaders := textproto.MIMEHeader{}
 	partHeaders.Set("Content-Disposition", fmt.Sprintf(`form-data; name="file"; filename="%s"`, escapeGigaChatMultipartFilename(filename)))
-	if request.ContentType != nil && strings.TrimSpace(*request.ContentType) != "" {
-		partHeaders.Set("Content-Type", strings.TrimSpace(*request.ContentType))
+	if contentType != "" {
+		partHeaders.Set("Content-Type", contentType)
 	}
 	part, err := writer.CreatePart(partHeaders)
 	if err != nil {
@@ -333,6 +334,157 @@ func buildGigaChatFileUploadBody(request *schemas.BifrostFileUploadRequest) ([]b
 	}
 
 	return body.Bytes(), writer.FormDataContentType(), nil
+}
+
+var gigaChatFileUploadContentTypesByExtension = map[string]string{
+	".txt":  "text/plain",
+	".doc":  "application/msword",
+	".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+	".pdf":  "application/pdf",
+	".epub": "application/epub",
+	".ppt":  "application/ppt",
+	".pptx": "application/pptx",
+	".xlsx": "application/vnd.ms-excel",
+	".jpg":  "image/jpeg",
+	".jpeg": "image/jpeg",
+	".png":  "image/png",
+	".tif":  "image/tiff",
+	".tiff": "image/tiff",
+	".bmp":  "image/bmp",
+	".mp4":  "audio/mp4",
+	".mp3":  "audio/mp3",
+	".m4a":  "audio/x-m4a",
+	".wav":  "audio/x-wav",
+	".weba": "audio/webm",
+	".ogg":  "audio/x-ogg",
+	".opus": "audio/opus",
+}
+
+var gigaChatFileUploadExtensionsByContentType = map[string]string{
+	"text/plain":         "txt",
+	"application/msword": "doc",
+	"application/vnd.openxmlformats-officedocument.wordprocessingml.document": "docx",
+	"application/pdf":          "pdf",
+	"application/epub":         "epub",
+	"application/ppt":          "ppt",
+	"application/pptx":         "pptx",
+	"application/vnd.ms-excel": "xlsx",
+	"image/jpeg":               "jpg",
+	"image/png":                "png",
+	"image/tiff":               "tiff",
+	"image/bmp":                "bmp",
+	"audio/mp4":                "mp4",
+	"audio/mp3":                "mp3",
+	"audio/x-m4a":              "m4a",
+	"audio/x-wav":              "wav",
+	"audio/webm":               "weba",
+	"audio/x-ogg":              "ogg",
+	"audio/opus":               "opus",
+}
+
+func resolveGigaChatFileUploadContentType(contentType *string, filename string, file []byte) string {
+	if contentType != nil {
+		if normalized := normalizeGigaChatFileUploadContentType(*contentType); normalized != "" {
+			return normalized
+		}
+	}
+	if inferred := inferGigaChatFileUploadContentTypeFromFilename(filename); inferred != "" {
+		return inferred
+	}
+	if detected := normalizeGigaChatFileUploadContentType(http.DetectContentType(file)); detected != "" {
+		return detected
+	}
+	if looksLikeTextFile(file) {
+		return "text/plain"
+	}
+	return "application/octet-stream"
+}
+
+func resolveGigaChatFileUploadFilename(filename string, contentType string) string {
+	filename = strings.TrimSpace(filename)
+	if filename == "" {
+		filename = "file"
+	}
+
+	ext := strings.ToLower(filepath.Ext(filename))
+	if ext != "" {
+		if expectedContentType := gigaChatFileUploadContentTypesByExtension[ext]; expectedContentType == contentType {
+			return filename
+		}
+	}
+
+	if extension, ok := gigaChatFileUploadExtensionsByContentType[contentType]; ok {
+		base := filename
+		if ext != "" {
+			base = strings.TrimSuffix(filename, filepath.Ext(filename))
+		}
+		if strings.TrimSpace(base) == "" {
+			base = "file"
+		}
+		return base + "." + extension
+	}
+
+	return filename
+}
+
+func inferGigaChatFileUploadContentTypeFromFilename(filename string) string {
+	ext := strings.ToLower(filepath.Ext(strings.TrimSpace(filename)))
+	if ext == "" {
+		return ""
+	}
+	if contentType, ok := gigaChatFileUploadContentTypesByExtension[ext]; ok {
+		return contentType
+	}
+	return normalizeGigaChatFileUploadContentType(mime.TypeByExtension(ext))
+}
+
+func normalizeGigaChatFileUploadContentType(contentType string) string {
+	contentType = strings.TrimSpace(strings.ToLower(contentType))
+	if contentType == "" {
+		return ""
+	}
+	if mediaType, _, err := mime.ParseMediaType(contentType); err == nil {
+		contentType = strings.TrimSpace(strings.ToLower(mediaType))
+	}
+
+	switch contentType {
+	case "application/json", "application/jsonl", "application/x-jsonl", "application/x-ndjson", "application/ndjson", "application/json-lines", "text/json", "text/x-jsonl", "text/markdown":
+		return "text/plain"
+	case "image/jpg":
+		return "image/jpeg"
+	case "application/epub+zip":
+		return "application/epub"
+	case "application/vnd.ms-powerpoint":
+		return "application/ppt"
+	case "application/vnd.openxmlformats-officedocument.presentationml.presentation":
+		return "application/pptx"
+	case "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet":
+		return "application/vnd.ms-excel"
+	case "audio/mpeg":
+		return "audio/mp3"
+	case "audio/ogg":
+		return "audio/x-ogg"
+	case "audio/wav", "audio/wave", "audio/x-pn-wav":
+		return "audio/x-wav"
+	}
+
+	for _, supportedContentType := range gigaChatFileUploadContentTypesByExtension {
+		if contentType == supportedContentType {
+			return contentType
+		}
+	}
+	return ""
+}
+
+func looksLikeTextFile(file []byte) bool {
+	if len(file) == 0 {
+		return false
+	}
+	sample := file
+	if len(sample) > 512 {
+		sample = sample[:512]
+	}
+	return bytes.IndexByte(sample, 0) == -1 && utf8.Valid(sample)
 }
 
 func escapeGigaChatMultipartFilename(filename string) string {

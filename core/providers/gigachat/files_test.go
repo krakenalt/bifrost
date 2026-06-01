@@ -176,8 +176,11 @@ func testGigaChatFileUploadMultipart(t *testing.T) {
 			t.Fatalf("FormFile returned error: %v", err)
 		}
 		defer file.Close()
-		if header.Filename != "input.jsonl" {
+		if header.Filename != "input.txt" {
 			t.Fatalf("filename mismatch: got %q", header.Filename)
+		}
+		if got := header.Header.Get("Content-Type"); got != "text/plain" {
+			t.Fatalf("file content type mismatch: got %q, want text/plain", got)
 		}
 		body, err := io.ReadAll(file)
 		if err != nil {
@@ -189,7 +192,7 @@ func testGigaChatFileUploadMultipart(t *testing.T) {
 
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("X-Request-ID", "file-upload-request-id")
-		_, _ = w.Write([]byte(`{"id":"file-uploaded","object":"file","bytes":11,"created_at":1780306293,"filename":"input.jsonl","purpose":"general","access_policy":"private"}`))
+		_, _ = w.Write([]byte(`{"id":"file-uploaded","object":"file","bytes":11,"created_at":1780306293,"filename":"input.txt","purpose":"general","access_policy":"private"}`))
 	}))
 	defer server.Close()
 
@@ -207,7 +210,7 @@ func testGigaChatFileUploadMultipart(t *testing.T) {
 	if bifrostErr != nil {
 		t.Fatalf("FileUpload returned error: %v", bifrostErr)
 	}
-	if response.ID != "file-uploaded" || response.Filename != "input.jsonl" || response.Bytes != 11 {
+	if response.ID != "file-uploaded" || response.Filename != "input.txt" || response.Bytes != 11 {
 		t.Fatalf("unexpected upload response: %#v", response)
 	}
 	if response.Purpose != schemas.FilePurposeBatch {
@@ -218,6 +221,88 @@ func testGigaChatFileUploadMultipart(t *testing.T) {
 	}
 	if response.ExtraFields.ProviderResponseHeaders["X-Request-Id"] != "file-upload-request-id" {
 		t.Fatalf("provider headers mismatch: %#v", response.ExtraFields.ProviderResponseHeaders)
+	}
+}
+
+func TestGigaChatFileUploadMetadata(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name            string
+		filename        string
+		contentType     *string
+		file            []byte
+		wantFilename    string
+		wantContentType string
+	}{
+		{
+			name:            "json content type is uploaded as supported text file",
+			filename:        "input.jsonl",
+			contentType:     schemas.Ptr("application/json"),
+			file:            []byte(`{"custom_id":"req-1"}` + "\n"),
+			wantFilename:    "input.txt",
+			wantContentType: "text/plain",
+		},
+		{
+			name:            "missing filename text defaults to txt",
+			file:            []byte(`{"custom_id":"req-1"}` + "\n"),
+			wantFilename:    "file.txt",
+			wantContentType: "text/plain",
+		},
+		{
+			name:            "supported binary type is preserved",
+			filename:        "document.pdf",
+			contentType:     schemas.Ptr("application/pdf"),
+			file:            []byte("%PDF-1.7\n"),
+			wantFilename:    "document.pdf",
+			wantContentType: "application/pdf",
+		},
+		{
+			name:            "xlsx mime alias uses gigachat supported type",
+			filename:        "table.xlsx",
+			contentType:     schemas.Ptr("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
+			file:            []byte("xlsx"),
+			wantFilename:    "table.xlsx",
+			wantContentType: "application/vnd.ms-excel",
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			body, contentType, bifrostErr := buildGigaChatFileUploadBody(&schemas.BifrostFileUploadRequest{
+				Provider:    schemas.GigaChat,
+				File:        tt.file,
+				Filename:    tt.filename,
+				Purpose:     schemas.FilePurposeUserData,
+				ContentType: tt.contentType,
+			})
+			if bifrostErr != nil {
+				t.Fatalf("buildGigaChatFileUploadBody returned error: %v", bifrostErr)
+			}
+			if !strings.HasPrefix(contentType, "multipart/form-data;") {
+				t.Fatalf("content type mismatch: got %q", contentType)
+			}
+
+			request := httptest.NewRequest(http.MethodPost, "/files", bytes.NewReader(body))
+			request.Header.Set("Content-Type", contentType)
+			if err := request.ParseMultipartForm(1024); err != nil {
+				t.Fatalf("ParseMultipartForm returned error: %v", err)
+			}
+			file, header, err := request.FormFile("file")
+			if err != nil {
+				t.Fatalf("FormFile returned error: %v", err)
+			}
+			defer file.Close()
+			if header.Filename != tt.wantFilename {
+				t.Fatalf("filename mismatch: got %q, want %q", header.Filename, tt.wantFilename)
+			}
+			if got := header.Header.Get("Content-Type"); got != tt.wantContentType {
+				t.Fatalf("file content type mismatch: got %q, want %q", got, tt.wantContentType)
+			}
+		})
 	}
 }
 
