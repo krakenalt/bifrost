@@ -22,7 +22,10 @@ func testGigaChatChatCompletion(t *testing.T) {
 	t.Run("ConverterMapsOpenAIJSONSchemaResponseFormat", testGigaChatChatConverterMapsOpenAIJSONSchemaResponseFormat)
 	t.Run("ConverterMapsGigaChatJSONSchemaResponseFormat", testGigaChatChatConverterMapsGigaChatJSONSchemaResponseFormat)
 	t.Run("ConverterPreservesAssistantReasoningContent", testGigaChatChatConverterPreservesAssistantReasoningContent)
+	t.Run("ConverterMapsFileAttachments", testGigaChatChatConverterMapsFileAttachments)
 	t.Run("ExecutesWithOAuthTokenAndExtraParams", testGigaChatChatCompletionExecutesWithOAuthTokenAndExtraParams)
+	t.Run("UploadsInlineImageAttachment", testGigaChatChatCompletionUploadsInlineImageAttachment)
+	t.Run("UploadsInlineFileAttachment", testGigaChatChatCompletionUploadsInlineFileAttachment)
 	t.Run("RejectsUnsupportedTools", testGigaChatChatCompletionRejectsUnsupportedTools)
 	t.Run("RejectsUnsupportedResponseFormat", testGigaChatChatCompletionRejectsUnsupportedResponseFormat)
 	t.Run("MapsProviderErrors", testGigaChatChatCompletionMapsProviderErrors)
@@ -215,6 +218,66 @@ func testGigaChatChatConverterPreservesAssistantReasoningContent(t *testing.T) {
 	}
 }
 
+func testGigaChatChatConverterMapsFileAttachments(t *testing.T) {
+	t.Parallel()
+
+	prompt := "Кратко перескажи документ"
+	fileID := "file-document"
+	filename := "document.pdf"
+	fileType := "application/pdf"
+	request := &schemas.BifrostChatRequest{
+		Model: "GigaChat",
+		Input: []schemas.ChatMessage{
+			{
+				Role: schemas.ChatMessageRoleUser,
+				Content: &schemas.ChatMessageContent{
+					ContentBlocks: []schemas.ChatContentBlock{
+						{Type: schemas.ChatContentBlockTypeText, Text: &prompt},
+						{
+							Type: schemas.ChatContentBlockTypeFile,
+							File: &schemas.ChatInputFile{
+								FileID:   &fileID,
+								Filename: &filename,
+								FileType: &fileType,
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	gigaChatReq, err := ToGigaChatChatRequest(testBifrostContext(), request)
+	if err != nil {
+		t.Fatalf("ToGigaChatChatRequest returned error: %v", err)
+	}
+	if len(gigaChatReq.Messages) != 1 {
+		t.Fatalf("message count mismatch: got %d", len(gigaChatReq.Messages))
+	}
+	message := gigaChatReq.Messages[0]
+	if message.Content == nil || message.Content.ContentStr == nil || *message.Content.ContentStr != prompt {
+		t.Fatalf("content mismatch: %#v", message.Content)
+	}
+	if len(message.Attachments) != 1 || message.Attachments[0] != fileID {
+		t.Fatalf("attachments mismatch: %#v", message.Attachments)
+	}
+	if gigaChatReq.FunctionCall != "auto" {
+		t.Fatalf("function_call mismatch: got %#v, want auto", gigaChatReq.FunctionCall)
+	}
+
+	body, err := json.Marshal(gigaChatReq)
+	if err != nil {
+		t.Fatalf("failed to marshal request: %v", err)
+	}
+	bodyStr := string(body)
+	if !strings.Contains(bodyStr, `"attachments":["file-document"]`) {
+		t.Fatalf("request body missing attachments: %s", body)
+	}
+	if strings.Contains(bodyStr, "file_data") || strings.Contains(bodyStr, "file_id") {
+		t.Fatalf("request body should not include OpenAI file content block fields: %s", body)
+	}
+}
+
 func testGigaChatChatCompletionExecutesWithOAuthTokenAndExtraParams(t *testing.T) {
 	t.Parallel()
 
@@ -296,6 +359,187 @@ func testGigaChatChatCompletionExecutesWithOAuthTokenAndExtraParams(t *testing.T
 	}
 	if got := ctx.Value(schemas.BifrostContextKeyProviderResponseHeaders); got == nil {
 		t.Fatal("provider response headers were not stored in context")
+	}
+}
+
+func testGigaChatChatCompletionUploadsInlineImageAttachment(t *testing.T) {
+	t.Parallel()
+
+	var uploadRequests atomic.Int32
+	var chatRequests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/v1/files":
+			uploadRequests.Add(1)
+			if got := request.Header.Get("Authorization"); got != "Bearer image-token" {
+				t.Fatalf("file upload authorization header mismatch: got %q", got)
+			}
+			if err := request.ParseMultipartForm(1024); err != nil {
+				t.Fatalf("failed to parse upload multipart form: %v", err)
+			}
+			if got := request.FormValue("purpose"); got != "general" {
+				t.Fatalf("upload purpose mismatch: got %q", got)
+			}
+			file, header, err := request.FormFile("file")
+			if err != nil {
+				t.Fatalf("failed to read uploaded file: %v", err)
+			}
+			defer file.Close()
+			fileBytes, err := io.ReadAll(file)
+			if err != nil {
+				t.Fatalf("failed to read uploaded bytes: %v", err)
+			}
+			if string(fileBytes) != "image-bytes" {
+				t.Fatalf("uploaded image bytes mismatch: %q", fileBytes)
+			}
+			if header.Filename != "image.jpg" {
+				t.Fatalf("uploaded image filename mismatch: got %q", header.Filename)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"id":"uploaded-image","object":"file","bytes":11,"created_at":1700000000,"filename":"image.jpg","purpose":"general"}`))
+		case "/v1/chat/completions":
+			chatRequests.Add(1)
+			body, err := io.ReadAll(request.Body)
+			if err != nil {
+				t.Fatalf("failed to read chat body: %v", err)
+			}
+			payload := assertGigaChatChatBodyAttachment(t, body, "uploaded-image")
+			bodyStr := string(body)
+			if strings.Contains(bodyStr, "data:image") || strings.Contains(bodyStr, "image_url") {
+				t.Fatalf("chat body leaked OpenAI image_url payload: %s", body)
+			}
+			if _, ok := payload["function_call"]; ok {
+				t.Fatalf("image-only attachment should not force function_call auto: %s", body)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"choices":[{"index":0,"message":{"role":"assistant","content":"На изображении..."},"finish_reason":"stop"}],"model":"GigaChat","object":"chat.completion"}`))
+		default:
+			t.Fatalf("unexpected path: %s", request.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	prompt := "Что на изображении?"
+	imageURL := "data:image/jpg;base64,aW1hZ2UtYnl0ZXM="
+	request := &schemas.BifrostChatRequest{
+		Model: "GigaChat",
+		Input: []schemas.ChatMessage{
+			{
+				Role: schemas.ChatMessageRoleUser,
+				Content: &schemas.ChatMessageContent{
+					ContentBlocks: []schemas.ChatContentBlock{
+						{Type: schemas.ChatContentBlockTypeText, Text: &prompt},
+						{Type: schemas.ChatContentBlockTypeImage, ImageURLStruct: &schemas.ChatInputImage{URL: imageURL}},
+					},
+				},
+			},
+		},
+	}
+
+	provider := newTestGigaChatChatProvider(t, server.URL)
+	response, bifrostErr := provider.ChatCompletion(testBifrostContext(), testGigaChatAccessTokenKey("image-token"), request)
+	if bifrostErr != nil {
+		t.Fatalf("ChatCompletion returned error: %v", bifrostErr)
+	}
+	if response == nil {
+		t.Fatal("expected response, got nil")
+	}
+	if uploadRequests.Load() != 1 {
+		t.Fatalf("upload request count mismatch: got %d, want 1", uploadRequests.Load())
+	}
+	if chatRequests.Load() != 1 {
+		t.Fatalf("chat request count mismatch: got %d, want 1", chatRequests.Load())
+	}
+}
+
+func testGigaChatChatCompletionUploadsInlineFileAttachment(t *testing.T) {
+	t.Parallel()
+
+	var uploadRequests atomic.Int32
+	var chatRequests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/v1/files":
+			uploadRequests.Add(1)
+			if err := request.ParseMultipartForm(1024); err != nil {
+				t.Fatalf("failed to parse upload multipart form: %v", err)
+			}
+			file, header, err := request.FormFile("file")
+			if err != nil {
+				t.Fatalf("failed to read uploaded file: %v", err)
+			}
+			defer file.Close()
+			fileBytes, err := io.ReadAll(file)
+			if err != nil {
+				t.Fatalf("failed to read uploaded bytes: %v", err)
+			}
+			if string(fileBytes) != "%PDF test" {
+				t.Fatalf("uploaded file bytes mismatch: %q", fileBytes)
+			}
+			if header.Filename != "Day_2_v6.pdf" {
+				t.Fatalf("uploaded filename mismatch: got %q", header.Filename)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"id":"uploaded-pdf","object":"file","bytes":9,"created_at":1700000000,"filename":"Day_2_v6.pdf","purpose":"general"}`))
+		case "/v1/chat/completions":
+			chatRequests.Add(1)
+			body, err := io.ReadAll(request.Body)
+			if err != nil {
+				t.Fatalf("failed to read chat body: %v", err)
+			}
+			payload := assertGigaChatChatBodyAttachment(t, body, "uploaded-pdf")
+			bodyStr := string(body)
+			if got := payload["function_call"]; got != "auto" {
+				t.Fatalf("document attachment should enable function_call auto: got %#v body %s", got, body)
+			}
+			if strings.Contains(bodyStr, "file_data") || strings.Contains(bodyStr, "application/pdf;base64") {
+				t.Fatalf("chat body leaked OpenAI file payload: %s", body)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"choices":[{"index":0,"message":{"role":"assistant","content":"Краткое содержание..."},"finish_reason":"stop"}],"model":"GigaChat","object":"chat.completion"}`))
+		default:
+			t.Fatalf("unexpected path: %s", request.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	prompt := "Create a comprehensive summary of this pdf"
+	filename := "Day_2_v6.pdf"
+	fileData := "data:application/pdf;base64,JVBERiB0ZXN0"
+	request := &schemas.BifrostChatRequest{
+		Model: "GigaChat",
+		Input: []schemas.ChatMessage{
+			{
+				Role: schemas.ChatMessageRoleUser,
+				Content: &schemas.ChatMessageContent{
+					ContentBlocks: []schemas.ChatContentBlock{
+						{Type: schemas.ChatContentBlockTypeText, Text: &prompt},
+						{
+							Type: schemas.ChatContentBlockTypeFile,
+							File: &schemas.ChatInputFile{
+								Filename: &filename,
+								FileData: &fileData,
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	provider := newTestGigaChatChatProvider(t, server.URL)
+	response, bifrostErr := provider.ChatCompletion(testBifrostContext(), testGigaChatAccessTokenKey("file-token"), request)
+	if bifrostErr != nil {
+		t.Fatalf("ChatCompletion returned error: %v", bifrostErr)
+	}
+	if response == nil {
+		t.Fatal("expected response, got nil")
+	}
+	if uploadRequests.Load() != 1 {
+		t.Fatalf("upload request count mismatch: got %d, want 1", uploadRequests.Load())
+	}
+	if chatRequests.Load() != 1 {
+		t.Fatalf("chat request count mismatch: got %d, want 1", chatRequests.Load())
 	}
 }
 
@@ -764,6 +1008,28 @@ func assertGigaChatChatRequestBodyWithStream(t *testing.T, request *http.Request
 	if got := message["content"]; got != "Привет" {
 		t.Fatalf("message content mismatch: got %#v", got)
 	}
+}
+
+func assertGigaChatChatBodyAttachment(t *testing.T, body []byte, wantAttachment string) map[string]interface{} {
+	t.Helper()
+
+	var payload map[string]interface{}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("failed to unmarshal chat body %s: %v", body, err)
+	}
+	messages, ok := payload["messages"].([]interface{})
+	if !ok || len(messages) != 1 {
+		t.Fatalf("messages mismatch: %#v", payload["messages"])
+	}
+	message, ok := messages[0].(map[string]interface{})
+	if !ok {
+		t.Fatalf("message shape mismatch: %#v", messages[0])
+	}
+	attachments, ok := message["attachments"].([]interface{})
+	if !ok || len(attachments) != 1 || attachments[0] != wantAttachment {
+		t.Fatalf("attachments mismatch: %#v body %s", message["attachments"], body)
+	}
+	return payload
 }
 
 func assertGigaChatJSONSchemaResponseFormat(t *testing.T, responseFormat interface{}, wantTitle string, wantDescription string, wantStrict bool) {

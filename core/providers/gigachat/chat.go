@@ -31,12 +31,14 @@ func ToGigaChatChatRequest(_ *schemas.BifrostContext, bifrostReq *schemas.Bifros
 
 	toolCallNamesByID := collectGigaChatChatToolCallNames(bifrostReq.Input)
 	messages := make([]GigaChatChatMessage, 0, len(bifrostReq.Input))
+	needsAutoFunctionCall := false
 	for index, message := range bifrostReq.Input {
-		convertedMessage, err := toGigaChatChatMessage(message, toolCallNamesByID)
+		convertedMessage, messageNeedsAutoFunctionCall, err := toGigaChatChatMessage(message, toolCallNamesByID)
 		if err != nil {
 			return nil, fmt.Errorf("messages[%d]: %w", index, err)
 		}
 		messages = append(messages, convertedMessage)
+		needsAutoFunctionCall = needsAutoFunctionCall || messageNeedsAutoFunctionCall
 	}
 
 	gigaChatReq := &GigaChatChatRequest{
@@ -45,6 +47,9 @@ func ToGigaChatChatRequest(_ *schemas.BifrostContext, bifrostReq *schemas.Bifros
 		Stream:   schemas.Ptr(false),
 	}
 	if bifrostReq.Params == nil {
+		if needsAutoFunctionCall {
+			gigaChatReq.FunctionCall = "auto"
+		}
 		return gigaChatReq, nil
 	}
 
@@ -74,6 +79,9 @@ func ToGigaChatChatRequest(_ *schemas.BifrostContext, bifrostReq *schemas.Bifros
 		return nil, err
 	}
 	gigaChatReq.FunctionCall = functionCall
+	if needsAutoFunctionCall && gigaChatReq.FunctionCall == nil {
+		gigaChatReq.FunctionCall = "auto"
+	}
 
 	return gigaChatReq, nil
 }
@@ -183,45 +191,51 @@ func withGigaChatChatResponseProvider(providerName schemas.ModelProvider) func(*
 	}
 }
 
-func toGigaChatChatMessage(message schemas.ChatMessage, toolCallNamesByID map[string]string) (GigaChatChatMessage, error) {
+func toGigaChatChatMessage(message schemas.ChatMessage, toolCallNamesByID map[string]string) (GigaChatChatMessage, bool, error) {
 	switch message.Role {
 	case schemas.ChatMessageRoleSystem, schemas.ChatMessageRoleUser, schemas.ChatMessageRoleAssistant:
 	case schemas.ChatMessageRoleTool:
-		return toGigaChatFunctionResultMessage(message, toolCallNamesByID)
+		convertedMessage, err := toGigaChatFunctionResultMessage(message, toolCallNamesByID)
+		return convertedMessage, false, err
 	case schemas.ChatMessageRoleDeveloper:
-		return GigaChatChatMessage{}, fmt.Errorf("developer messages are not supported by GigaChat v1 chat completions")
+		return GigaChatChatMessage{}, false, fmt.Errorf("developer messages are not supported by GigaChat v1 chat completions")
 	default:
-		return GigaChatChatMessage{}, fmt.Errorf("unsupported role %q", message.Role)
+		return GigaChatChatMessage{}, false, fmt.Errorf("unsupported role %q", message.Role)
 	}
 	if message.ChatToolMessage != nil {
-		return GigaChatChatMessage{}, fmt.Errorf("tool message fields are not supported by GigaChat v1 chat completions")
+		return GigaChatChatMessage{}, false, fmt.Errorf("tool message fields are not supported by GigaChat v1 chat completions")
 	}
 	if message.ChatAssistantMessage != nil {
 		if len(message.ChatAssistantMessage.ToolCalls) > 0 {
-			return toGigaChatAssistantFunctionCallMessage(message)
+			convertedMessage, err := toGigaChatAssistantFunctionCallMessage(message)
+			return convertedMessage, false, err
 		}
 		if message.ChatAssistantMessage.Refusal != nil ||
 			message.ChatAssistantMessage.Audio != nil ||
 			len(message.ChatAssistantMessage.Annotations) > 0 {
-			return GigaChatChatMessage{}, fmt.Errorf("assistant-only OpenAI metadata is not supported by GigaChat v1 chat completions")
+			return GigaChatChatMessage{}, false, fmt.Errorf("assistant-only OpenAI metadata is not supported by GigaChat v1 chat completions")
 		}
 	}
 	reasoning, err := toGigaChatChatReasoningContent(message.ChatAssistantMessage)
 	if err != nil {
-		return GigaChatChatMessage{}, err
+		return GigaChatChatMessage{}, false, err
 	}
 
-	content, err := toGigaChatChatMessageContent(message.Content)
+	content, attachments, needsAutoFunctionCall, err := toGigaChatChatMessageContent(message.Content)
 	if err != nil {
-		return GigaChatChatMessage{}, err
+		return GigaChatChatMessage{}, false, err
+	}
+	if content == nil && len(attachments) > 0 {
+		content = &schemas.ChatMessageContent{ContentStr: schemas.Ptr("")}
 	}
 
 	return GigaChatChatMessage{
-		Role:      string(message.Role),
-		Content:   content,
-		Name:      message.Name,
-		Reasoning: reasoning,
-	}, nil
+		Role:        string(message.Role),
+		Content:     content,
+		Attachments: attachments,
+		Name:        message.Name,
+		Reasoning:   reasoning,
+	}, needsAutoFunctionCall, nil
 }
 
 func collectGigaChatChatToolCallNames(messages []schemas.ChatMessage) map[string]string {
@@ -259,9 +273,12 @@ func toGigaChatAssistantFunctionCallMessage(message schemas.ChatMessage) (GigaCh
 		return GigaChatChatMessage{}, err
 	}
 
-	content, err := toGigaChatChatMessageContent(message.Content)
+	content, attachments, _, err := toGigaChatChatMessageContent(message.Content)
 	if err != nil {
 		return GigaChatChatMessage{}, err
+	}
+	if len(attachments) > 0 {
+		return GigaChatChatMessage{}, fmt.Errorf("assistant function_call messages do not support attachments")
 	}
 	if content == nil {
 		content = &schemas.ChatMessageContent{ContentStr: schemas.Ptr("")}
@@ -298,9 +315,12 @@ func toGigaChatFunctionResultMessage(message schemas.ChatMessage, toolCallNamesB
 	if name == "" {
 		return GigaChatChatMessage{}, fmt.Errorf("function result message requires function name or matching tool_call_id")
 	}
-	content, err := toGigaChatChatMessageContent(message.Content)
+	content, attachments, _, err := toGigaChatChatMessageContent(message.Content)
 	if err != nil {
 		return GigaChatChatMessage{}, err
+	}
+	if len(attachments) > 0 {
+		return GigaChatChatMessage{}, fmt.Errorf("function result messages do not support attachments")
 	}
 	if content == nil || content.ContentStr == nil || strings.TrimSpace(*content.ContentStr) == "" {
 		return GigaChatChatMessage{}, fmt.Errorf("function result message content is required")
@@ -348,28 +368,54 @@ func toGigaChatChatReasoningContent(assistantMessage *schemas.ChatAssistantMessa
 	return &reasoning, nil
 }
 
-func toGigaChatChatMessageContent(content *schemas.ChatMessageContent) (*schemas.ChatMessageContent, error) {
+func toGigaChatChatMessageContent(content *schemas.ChatMessageContent) (*schemas.ChatMessageContent, []string, bool, error) {
 	if content == nil {
-		return nil, nil
+		return nil, nil, false, nil
 	}
 	if content.ContentStr != nil {
-		return content, nil
+		return content, nil, false, nil
 	}
 	if len(content.ContentBlocks) == 0 {
-		return content, nil
+		return content, nil, false, nil
 	}
 
 	var textBuilder strings.Builder
+	attachments := make([]string, 0)
+	needsAutoFunctionCall := false
 	for index, block := range content.ContentBlocks {
-		if block.Type != schemas.ChatContentBlockTypeText {
-			return nil, fmt.Errorf("content block %d with type %q is not supported by GigaChat v1 chat completions", index, block.Type)
-		}
-		if block.Text != nil {
-			textBuilder.WriteString(*block.Text)
+		switch block.Type {
+		case schemas.ChatContentBlockTypeText:
+			if block.Text != nil {
+				textBuilder.WriteString(*block.Text)
+			}
+		case schemas.ChatContentBlockTypeFile:
+			attachmentID, blockNeedsAutoFunctionCall, err := toGigaChatChatAttachment(index, block)
+			if err != nil {
+				return nil, nil, false, err
+			}
+			attachments = append(attachments, attachmentID)
+			needsAutoFunctionCall = needsAutoFunctionCall || blockNeedsAutoFunctionCall
+		case schemas.ChatContentBlockTypeImage:
+			return nil, nil, false, fmt.Errorf("content block %d: image_url must be uploaded before GigaChat v1 chat completions request conversion", index)
+		default:
+			return nil, nil, false, fmt.Errorf("content block %d with type %q is not supported by GigaChat v1 chat completions", index, block.Type)
 		}
 	}
 	text := textBuilder.String()
-	return &schemas.ChatMessageContent{ContentStr: &text}, nil
+	return &schemas.ChatMessageContent{ContentStr: &text}, attachments, needsAutoFunctionCall, nil
+}
+
+func toGigaChatChatAttachment(index int, block schemas.ChatContentBlock) (string, bool, error) {
+	if block.File == nil {
+		return "", false, fmt.Errorf("content block %d: file block is missing file payload", index)
+	}
+	if block.File.FileData != nil || block.File.FileURL != nil {
+		return "", false, fmt.Errorf("content block %d: GigaChat v1 chat completions supports pre-uploaded file_id references only; upload inline file content before request conversion", index)
+	}
+	if block.File.FileID == nil || strings.TrimSpace(*block.File.FileID) == "" {
+		return "", false, fmt.Errorf("content block %d: GigaChat attachment requires file_id", index)
+	}
+	return strings.TrimSpace(*block.File.FileID), gigaChatChatFileRequiresAutoFunctionCall(block.File), nil
 }
 
 func unsupportedGigaChatChatParams(params *schemas.ChatParameters) []string {

@@ -75,6 +75,11 @@ func (provider *GigaChatProvider) chatCompletion(ctx *schemas.BifrostContext, ke
 	if request == nil {
 		return nil, providerUtils.NewBifrostOperationError("chat completion request is nil", nil)
 	}
+	preparedRequest, bifrostErr := provider.prepareGigaChatChatAttachments(ctx, key, request)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+	request = preparedRequest
 
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
@@ -169,6 +174,14 @@ func (provider *GigaChatProvider) chatCompletionStream(
 	forceRefresh bool,
 ) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	ctx = ensureGigaChatContext(ctx)
+	if request == nil {
+		return nil, providerUtils.NewBifrostOperationError("chat completion request is nil", nil)
+	}
+	preparedRequest, bifrostErr := provider.prepareGigaChatChatAttachments(ctx, key, request)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+	request = preparedRequest
 
 	headers, bifrostErr := provider.buildAuthHeaders(ctx, key)
 	if forceRefresh {

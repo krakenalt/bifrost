@@ -52,6 +52,7 @@ func (request *GigaChatChatRequest) GetExtraParams() map[string]interface{} {
 type GigaChatChatMessage struct {
 	Role             string                      `json:"role,omitempty"`
 	Content          *schemas.ChatMessageContent `json:"content,omitempty"`
+	Attachments      []string                    `json:"attachments,omitempty"`
 	Name             *string                     `json:"name,omitempty"`
 	Reasoning        *string                     `json:"reasoning_content,omitempty"`
 	FunctionCall     *GigaChatFunctionCall       `json:"function_call,omitempty"`

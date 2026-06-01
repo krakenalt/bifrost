@@ -1,3 +1,4 @@
+- feat: support GigaChat chat file attachments from OpenAI content blocks
 - fix: support GigaChat embedding encoding_format compatibility
 - fix: support GigaChat v1 chat response_format json_schema
 - test: expand gated GigaChat live integration coverage
