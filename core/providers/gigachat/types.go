@@ -384,7 +384,19 @@ type GigaChatResponsesToolConfig struct {
 
 // GigaChatResponsesTool is a v2 tool definition.
 type GigaChatResponsesTool struct {
-	Functions *GigaChatResponsesFunctionsTool `json:"functions,omitempty"`
+	CodeInterpreter      map[string]interface{}          `json:"code_interpreter,omitempty"`
+	ImageGenerate        map[string]interface{}          `json:"image_generate,omitempty"`
+	WebSearch            *GigaChatResponsesWebSearchTool `json:"web_search,omitempty"`
+	URLContentExtraction map[string]interface{}          `json:"url_content_extraction,omitempty"`
+	Model3DGenerate      map[string]interface{}          `json:"model_3d_generate,omitempty"`
+	Functions            *GigaChatResponsesFunctionsTool `json:"functions,omitempty"`
+}
+
+// GigaChatResponsesWebSearchTool configures GigaChat v2 web search.
+type GigaChatResponsesWebSearchTool struct {
+	Type    *string  `json:"type,omitempty"`
+	Indexes []string `json:"indexes,omitempty"`
+	Flags   []string `json:"flags,omitempty"`
 }
 
 // GigaChatResponsesFunctionsTool wraps client-defined function specifications.
