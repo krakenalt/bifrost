@@ -1972,6 +1972,10 @@ func collectGigaChatResponsesStreamResponses(t *testing.T, chunks []*schemas.Bif
 		if chunk.BifrostResponsesStreamResponse.ExtraFields.Provider != schemas.GigaChat {
 			t.Fatalf("provider mismatch: got %q, want %q", chunk.BifrostResponsesStreamResponse.ExtraFields.Provider, schemas.GigaChat)
 		}
+		if chunk.BifrostResponsesStreamResponse.Response != nil &&
+			chunk.BifrostResponsesStreamResponse.Response.ExtraFields.Provider != schemas.GigaChat {
+			t.Fatalf("nested response provider mismatch: got %q, want %q", chunk.BifrostResponsesStreamResponse.Response.ExtraFields.Provider, schemas.GigaChat)
+		}
 		responses = append(responses, chunk.BifrostResponsesStreamResponse)
 	}
 	return responses

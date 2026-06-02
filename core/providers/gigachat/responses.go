@@ -174,15 +174,28 @@ func ToBifrostResponsesStreamResponse(providerName schemas.ModelProvider, respon
 	events := chatResponse.ToBifrostResponsesStreamResponse(state)
 	conversation := toBifrostGigaChatResponsesConversation(response.ThreadID)
 	for _, event := range events {
-		if event != nil {
-			event.ExtraFields.Provider = providerName
-			event.ExtraFields.RequestType = schemas.ResponsesStreamRequest
-			if event.Response != nil && event.Response.Conversation == nil {
-				event.Response.Conversation = conversation
-			}
+		if event == nil {
+			continue
+		}
+		applyGigaChatResponsesStreamExtraFields(event, providerName)
+		if event.Response != nil && event.Response.Conversation == nil {
+			event.Response.Conversation = conversation
 		}
 	}
 	return events
+}
+
+func applyGigaChatResponsesStreamExtraFields(event *schemas.BifrostResponsesStreamResponse, providerName schemas.ModelProvider) {
+	if event == nil {
+		return
+	}
+	event.ExtraFields.Provider = providerName
+	event.ExtraFields.RequestType = schemas.ResponsesStreamRequest
+	if event.Response == nil {
+		return
+	}
+	event.Response.ExtraFields.Provider = providerName
+	event.Response.ExtraFields.RequestType = schemas.ResponsesStreamRequest
 }
 
 func toBifrostGigaChatResponsesResponseID(response *GigaChatResponsesResponse) string {
