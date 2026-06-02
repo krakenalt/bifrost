@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -57,6 +58,95 @@ func TestParseGigaChatExpiresAt(t *testing.T) {
 	milliseconds := seconds * 1000
 	if got := parseGigaChatExpiresAt(milliseconds); !got.Equal(time.UnixMilli(milliseconds)) {
 		t.Fatalf("milliseconds expiry mismatch: got %s, want %s", got, time.UnixMilli(milliseconds))
+	}
+}
+
+func TestGigaChatTokenCache(t *testing.T) {
+	t.Parallel()
+
+	t.Run("PrunesExpiredEntriesAndKeepsReusableEntries", testGigaChatTokenCachePrunesExpiredEntriesAndKeepsReusableEntries)
+	t.Run("ConcurrentAccess", testGigaChatTokenCacheConcurrentAccess)
+}
+
+func testGigaChatTokenCachePrunesExpiredEntriesAndKeepsReusableEntries(t *testing.T) {
+	t.Parallel()
+
+	now := time.Unix(1_700_000_000, 0)
+	cache := newGigaChatTokenCache(func() time.Time { return now })
+	cache.entries["expired"] = &gigaChatTokenCacheEntry{
+		token: gigaChatCachedToken{
+			accessToken: "expired-token",
+			expiresAt:   now.Add(-time.Second),
+		},
+	}
+	cache.entries["valid"] = &gigaChatTokenCacheEntry{
+		token: gigaChatCachedToken{
+			accessToken: "valid-token",
+			expiresAt:   now.Add(time.Second),
+		},
+	}
+	cache.entries["empty"] = &gigaChatTokenCacheEntry{}
+
+	entry := cache.acquireEntry("new")
+	entry.mu.Lock()
+	entry.token = gigaChatCachedToken{accessToken: "new-token", expiresAt: now.Add(time.Hour)}
+	entry.mu.Unlock()
+	cache.releaseEntry("new", entry)
+
+	cache.mu.Lock()
+	defer cache.mu.Unlock()
+	if _, ok := cache.entries["expired"]; ok {
+		t.Fatal("expired cache entry was not pruned")
+	}
+	if _, ok := cache.entries["valid"]; !ok {
+		t.Fatal("valid cache entry was pruned")
+	}
+	if _, ok := cache.entries["empty"]; !ok {
+		t.Fatal("empty in-flight cache entry was pruned")
+	}
+	if _, ok := cache.entries["new"]; !ok {
+		t.Fatal("requested cache entry was not created")
+	}
+}
+
+func testGigaChatTokenCacheConcurrentAccess(t *testing.T) {
+	t.Parallel()
+
+	now := time.Unix(1_700_000_000, 0)
+	cache := newGigaChatTokenCache(func() time.Time { return now })
+
+	var wg sync.WaitGroup
+	for worker := 0; worker < 20; worker++ {
+		worker := worker
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for iteration := 0; iteration < 50; iteration++ {
+				cacheKey := "key-" + strconv.Itoa((worker+iteration)%7)
+				entry := cache.acquireEntry(cacheKey)
+				entry.mu.Lock()
+				entry.token = gigaChatCachedToken{
+					accessToken: "token-" + strconv.Itoa(worker),
+					expiresAt:   now.Add(time.Hour),
+				}
+				entry.mu.Unlock()
+				cache.releaseEntry(cacheKey, entry)
+			}
+		}()
+	}
+	wg.Wait()
+
+	finalEntry := cache.acquireEntry("final")
+	cache.releaseEntry("final", finalEntry)
+	cache.mu.Lock()
+	defer cache.mu.Unlock()
+	for cacheKey, entry := range cache.entries {
+		entry.mu.Lock()
+		valid := entry.token.isValid(now)
+		entry.mu.Unlock()
+		if !valid && cacheKey != "final" {
+			t.Fatalf("unexpected stale cache entry after concurrent access: %s", cacheKey)
+		}
 	}
 }
 

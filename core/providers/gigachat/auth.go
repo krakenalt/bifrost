@@ -46,6 +46,8 @@ type gigaChatCachedToken struct {
 type gigaChatTokenCacheEntry struct {
 	mu    sync.Mutex
 	token gigaChatCachedToken
+	// Guarded by gigaChatTokenCache.mu; prevents pruning entries while callers hold a pointer.
+	refCount int
 }
 
 type gigaChatTokenCache struct {
@@ -189,8 +191,9 @@ func (provider *GigaChatProvider) getOAuthAccessTokenWithRefresh(ctx *schemas.Bi
 	}
 
 	cacheKey := buildGigaChatOAuthCacheKey(authConfig)
-	entry := provider.tokenCache.getEntry(cacheKey)
+	entry := provider.tokenCache.acquireEntry(cacheKey)
 	entry.mu.Lock()
+	defer provider.tokenCache.releaseEntry(cacheKey, entry)
 	defer entry.mu.Unlock()
 
 	if !forceRefresh && entry.token.isValid(provider.tokenCache.now().Add(gigaChatOAuthRefreshLeeway)) {
@@ -216,8 +219,9 @@ func (provider *GigaChatProvider) getPasswordAccessTokenWithRefresh(ctx *schemas
 	}
 
 	cacheKey := buildGigaChatPasswordAuthCacheKey(authConfig)
-	entry := provider.tokenCache.getEntry(cacheKey)
+	entry := provider.tokenCache.acquireEntry(cacheKey)
 	entry.mu.Lock()
+	defer provider.tokenCache.releaseEntry(cacheKey, entry)
 	defer entry.mu.Unlock()
 
 	if !forceRefresh && entry.token.isValid(provider.tokenCache.now().Add(gigaChatOAuthRefreshLeeway)) {
@@ -274,16 +278,53 @@ func resolveGigaChatExplicitAccessToken(key schemas.Key) (string, bool, *schemas
 	return "", false, nil
 }
 
-func (cache *gigaChatTokenCache) getEntry(cacheKey string) *gigaChatTokenCacheEntry {
+func (cache *gigaChatTokenCache) acquireEntry(cacheKey string) *gigaChatTokenCacheEntry {
 	cache.mu.Lock()
 	defer cache.mu.Unlock()
+
+	cache.pruneExpiredEntriesLocked(cache.now())
 
 	entry := cache.entries[cacheKey]
 	if entry == nil {
 		entry = &gigaChatTokenCacheEntry{}
 		cache.entries[cacheKey] = entry
 	}
+	entry.refCount++
 	return entry
+}
+
+func (cache *gigaChatTokenCache) releaseEntry(cacheKey string, entry *gigaChatTokenCacheEntry) {
+	cache.mu.Lock()
+	defer cache.mu.Unlock()
+
+	if entry.refCount > 0 {
+		entry.refCount--
+	}
+	if entry.refCount != 0 || cache.entries[cacheKey] != entry {
+		return
+	}
+
+	entry.mu.Lock()
+	expired := entry.token.accessToken != "" && !entry.token.isValid(cache.now())
+	entry.mu.Unlock()
+	if expired {
+		delete(cache.entries, cacheKey)
+	}
+}
+
+func (cache *gigaChatTokenCache) pruneExpiredEntriesLocked(now time.Time) {
+	for cacheKey, entry := range cache.entries {
+		if entry.refCount != 0 {
+			continue
+		}
+		entry.mu.Lock()
+		expired := entry.token.accessToken != "" && !entry.token.isValid(now)
+		entry.mu.Unlock()
+
+		if expired {
+			delete(cache.entries, cacheKey)
+		}
+	}
 }
 
 func (token gigaChatCachedToken) isValid(validAfter time.Time) bool {
