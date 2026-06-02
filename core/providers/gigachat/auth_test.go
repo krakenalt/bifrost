@@ -22,6 +22,7 @@ func TestGigaChatOAuthTokenClient(t *testing.T) {
 	t.Parallel()
 
 	t.Run("RequestShapeAndDefaultScope", testGigaChatOAuthRequestShapeAndDefaultScope)
+	t.Run("ParsesMillisecondsExpiresAt", testGigaChatOAuthParsesMillisecondsExpiresAt)
 	t.Run("CachesTokenBeforeLeeway", testGigaChatOAuthCachesTokenBeforeLeeway)
 	t.Run("RefreshesTokenInsideLeeway", testGigaChatOAuthRefreshesTokenInsideLeeway)
 	t.Run("HandlesProviderErrors", testGigaChatOAuthHandlesProviderErrors)
@@ -34,12 +35,28 @@ func TestGigaChatPasswordTokenClient(t *testing.T) {
 	t.Parallel()
 
 	t.Run("RequestShape", testGigaChatPasswordRequestShape)
+	t.Run("ParsesSecondsExpiresAt", testGigaChatPasswordParsesSecondsExpiresAt)
 	t.Run("CachesTokenBeforeLeeway", testGigaChatPasswordCachesTokenBeforeLeeway)
-	t.Run("AcceptsImmediateExpiryWithoutCaching", testGigaChatPasswordAcceptsImmediateExpiryWithoutCaching)
+	t.Run("RefreshesTokenInsideLeeway", testGigaChatPasswordRefreshesTokenInsideLeeway)
+	t.Run("RejectsExpiredToken", testGigaChatPasswordRejectsExpiredToken)
 	t.Run("HandlesProviderErrors", testGigaChatPasswordHandlesProviderErrors)
 	t.Run("HandlesMalformedResponses", testGigaChatPasswordHandlesMalformedResponses)
 	t.Run("MissingUserPassword", testGigaChatPasswordMissingUserPassword)
 	t.Run("AuthPriority", testGigaChatAuthPriority)
+}
+
+func TestParseGigaChatExpiresAt(t *testing.T) {
+	t.Parallel()
+
+	seconds := int64(1_700_001_800)
+	if got := parseGigaChatExpiresAt(seconds); !got.Equal(time.Unix(seconds, 0)) {
+		t.Fatalf("seconds expiry mismatch: got %s, want %s", got, time.Unix(seconds, 0))
+	}
+
+	milliseconds := seconds * 1000
+	if got := parseGigaChatExpiresAt(milliseconds); !got.Equal(time.UnixMilli(milliseconds)) {
+		t.Fatalf("milliseconds expiry mismatch: got %s, want %s", got, time.UnixMilli(milliseconds))
+	}
 }
 
 func TestGigaChatAuthHeaders(t *testing.T) {
@@ -417,6 +434,71 @@ func testGigaChatPasswordRequestShape(t *testing.T) {
 	}
 }
 
+func testGigaChatOAuthParsesMillisecondsExpiresAt(t *testing.T) {
+	t.Parallel()
+
+	now := time.Unix(1_700_000_000, 0)
+	var requestCount atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		count := requestCount.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"access_token":"token-` + formatInt32(count) + `","expires_at":` + formatUnixMilli(now.Add(30*time.Minute)) + `}`))
+	}))
+	defer server.Close()
+
+	provider := newTestGigaChatProvider(t, func() time.Time { return now })
+	key := testGigaChatOAuthKey(server.URL, "", "test-credentials")
+
+	firstToken, bifrostErr := provider.getOAuthAccessToken(testBifrostContext(), key)
+	if bifrostErr != nil {
+		t.Fatalf("first getOAuthAccessToken returned error: %v", bifrostErr)
+	}
+	now = now.Add(31 * time.Minute)
+	secondToken, bifrostErr := provider.getOAuthAccessToken(testBifrostContext(), key)
+	if bifrostErr != nil {
+		t.Fatalf("second getOAuthAccessToken returned error: %v", bifrostErr)
+	}
+
+	if firstToken != "token-1" || secondToken != "token-2" {
+		t.Fatalf("token refresh mismatch: first=%q second=%q", firstToken, secondToken)
+	}
+	if requestCount.Load() != 2 {
+		t.Fatalf("request count mismatch: got %d, want 2", requestCount.Load())
+	}
+}
+
+func testGigaChatPasswordParsesSecondsExpiresAt(t *testing.T) {
+	t.Parallel()
+
+	now := time.Unix(1_700_000_000, 0)
+	var requestCount atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		count := requestCount.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"tok":"password-token-` + formatInt32(count) + `","exp":` + formatUnix(now.Add(30*time.Minute)) + `}`))
+	}))
+	defer server.Close()
+
+	provider := newTestGigaChatProvider(t, func() time.Time { return now })
+	key := testGigaChatPasswordKey(server.URL, "test-user", "test-password")
+
+	firstToken, bifrostErr := provider.getPasswordAccessToken(testBifrostContext(), key)
+	if bifrostErr != nil {
+		t.Fatalf("first getPasswordAccessToken returned error: %v", bifrostErr)
+	}
+	secondToken, bifrostErr := provider.getPasswordAccessToken(testBifrostContext(), key)
+	if bifrostErr != nil {
+		t.Fatalf("second getPasswordAccessToken returned error: %v", bifrostErr)
+	}
+
+	if firstToken != "password-token-1" || secondToken != "password-token-1" {
+		t.Fatalf("cached token mismatch: first=%q second=%q", firstToken, secondToken)
+	}
+	if requestCount.Load() != 1 {
+		t.Fatalf("request count mismatch: got %d, want 1", requestCount.Load())
+	}
+}
+
 func testGigaChatPasswordCachesTokenBeforeLeeway(t *testing.T) {
 	t.Parallel()
 
@@ -449,7 +531,7 @@ func testGigaChatPasswordCachesTokenBeforeLeeway(t *testing.T) {
 	}
 }
 
-func testGigaChatPasswordAcceptsImmediateExpiryWithoutCaching(t *testing.T) {
+func testGigaChatPasswordRefreshesTokenInsideLeeway(t *testing.T) {
 	t.Parallel()
 
 	now := time.Unix(1_700_000_000, 0)
@@ -457,7 +539,7 @@ func testGigaChatPasswordAcceptsImmediateExpiryWithoutCaching(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		count := requestCount.Add(1)
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"tok":"password-token-` + formatInt32(count) + `","exp":` + formatUnixMilli(now) + `}`))
+		_, _ = w.Write([]byte(`{"tok":"password-token-` + formatInt32(count) + `","exp":` + formatUnixMilli(now.Add(30*time.Minute)) + `}`))
 	}))
 	defer server.Close()
 
@@ -468,6 +550,7 @@ func testGigaChatPasswordAcceptsImmediateExpiryWithoutCaching(t *testing.T) {
 	if bifrostErr != nil {
 		t.Fatalf("first getPasswordAccessToken returned error: %v", bifrostErr)
 	}
+	now = now.Add(29*time.Minute + time.Second)
 	secondToken, bifrostErr := provider.getPasswordAccessToken(testBifrostContext(), key)
 	if bifrostErr != nil {
 		t.Fatalf("second getPasswordAccessToken returned error: %v", bifrostErr)
@@ -479,6 +562,27 @@ func testGigaChatPasswordAcceptsImmediateExpiryWithoutCaching(t *testing.T) {
 	if requestCount.Load() != 2 {
 		t.Fatalf("request count mismatch: got %d, want 2", requestCount.Load())
 	}
+}
+
+func testGigaChatPasswordRejectsExpiredToken(t *testing.T) {
+	t.Parallel()
+
+	now := time.Unix(1_700_000_000, 0)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"tok":"password-token-1","exp":` + formatUnixMilli(now.Add(-time.Second)) + `}`))
+	}))
+	defer server.Close()
+
+	provider := newTestGigaChatProvider(t, func() time.Time { return now })
+	_, bifrostErr := provider.getPasswordAccessToken(testBifrostContext(), testGigaChatPasswordKey(server.URL, "super-secret-user", "super-secret-password"))
+	if bifrostErr == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(bifrostErr.GetErrorString(), "already expired") {
+		t.Fatalf("unexpected error: %v", bifrostErr)
+	}
+	assertNoGigaChatSecretLeak(t, bifrostErr.String())
 }
 
 func testGigaChatPasswordHandlesProviderErrors(t *testing.T) {

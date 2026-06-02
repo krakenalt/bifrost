@@ -290,6 +290,13 @@ func (token gigaChatCachedToken) isValid(validAfter time.Time) bool {
 	return token.accessToken != "" && token.expiresAt.After(validAfter)
 }
 
+func parseGigaChatExpiresAt(value int64) time.Time {
+	if value > 1_000_000_000_000 {
+		return time.UnixMilli(value)
+	}
+	return time.Unix(value, 0)
+}
+
 type gigaChatOAuthConfig struct {
 	authURL     string
 	credentials string
@@ -430,7 +437,7 @@ func (provider *GigaChatProvider) requestGigaChatOAuthToken(ctx *schemas.Bifrost
 		return gigaChatCachedToken{}, newGigaChatProviderResponseError("GigaChat token response missing expires_at", nil)
 	}
 
-	expiresAt := time.Unix(tokenResponse.ExpiresAt, 0)
+	expiresAt := parseGigaChatExpiresAt(tokenResponse.ExpiresAt)
 	if !expiresAt.After(provider.tokenCache.now()) {
 		return gigaChatCachedToken{}, newGigaChatProviderResponseError("GigaChat token response is already expired", nil)
 	}
@@ -489,7 +496,10 @@ func (provider *GigaChatProvider) requestGigaChatPasswordToken(ctx *schemas.Bifr
 		return gigaChatCachedToken{}, newGigaChatProviderResponseError("GigaChat password token response missing exp", nil)
 	}
 
-	expiresAt := time.UnixMilli(tokenResponse.ExpiresAt)
+	expiresAt := parseGigaChatExpiresAt(tokenResponse.ExpiresAt)
+	if !expiresAt.After(provider.tokenCache.now()) {
+		return gigaChatCachedToken{}, newGigaChatProviderResponseError("GigaChat password token response is already expired", nil)
+	}
 
 	return gigaChatCachedToken{
 		accessToken: tokenResponse.Token,
