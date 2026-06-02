@@ -1,17 +1,18 @@
 ---
 title: "GigaChat"
-description: "GigaChat API conversion guide - authentication, endpoint configuration, v1 chat, v2 Responses mapping, tools, files, batches, embeddings, and streaming behavior"
+description: "GigaChat API conversion guide - authentication, endpoint configuration, v1 chat, v2 Responses mapping, tools, files, batches, embeddings, count tokens, and streaming behavior"
 icon: "/media/gigachat-nav.svg"
 ---
 
 ## Overview
 
-GigaChat is a custom Bifrost provider, not a pure OpenAI-compatible wrapper. Bifrost handles GigaChat-specific OAuth/password token exchange, optional TLS material, endpoint resolution, v1 chat completions, v2 chat-completions-backed Responses, model listing, embeddings, function tools, Responses built-in tools, Files, Batches, and raw payload redaction.
+GigaChat is a custom Bifrost provider, not a pure OpenAI-compatible wrapper. Bifrost handles GigaChat-specific OAuth/password token exchange, optional TLS material, endpoint resolution, v1 chat completions, v2 chat-completions-backed Responses, model listing, embeddings, count tokens, function tools, Responses built-in tools, Files, Batches, and raw payload redaction.
 
 Key characteristics:
 
 - **Provider-specific authentication** - OAuth authorization key, explicit access token, SDK-compatible password token flow, and optional TLS/client certificate material
 - **Two endpoint families** - Chat Completions, models, and embeddings use GigaChat v1; Bifrost Responses uses GigaChat v2 chat completions
+- **Text token counting** - CountTokens uses GigaChat v1 `/tokens/count` for text inputs and reports prompt/input token estimates only
 - **Function and built-in tools** - User-defined functions are supported, and Responses can map GigaChat-compatible built-ins such as web search, code interpreter, image generation, URL extraction, and 3D generation
 - **Files and Batches** - File upload/list/retrieve/delete/content and batch create/list/retrieve/results are implemented with explicit unsupported errors for unsupported batch actions
 - **Streaming support** - v1 chat and v2 Responses streams are normalized to Bifrost stream chunks
@@ -33,7 +34,7 @@ Key characteristics:
 | Speech (TTS)              | ❌            | ❌        | -                                 |
 | Transcriptions (STT)      | ❌            | ❌        | -                                 |
 | Image Generation endpoint | ❌            | ❌        | -                                 |
-| Count Tokens              | ❌            | -         | -                                 |
+| Count Tokens              | ✅            | -         | `/v1/tokens/count`                |
 
 <Note>
   Standalone Bifrost Image Generation is not implemented for GigaChat. The
@@ -139,6 +140,8 @@ case schemas.GigaChat:
 
 GigaChat requests are authorized upstream with `Authorization: Bearer <access_token>`. Bifrost obtains or forwards that token from the configured key.
 
+Bifrost sets the GigaChat provider `User-Agent` automatically; users do not need to configure it.
+
 ### Auth Modes
 
 | Mode | Configuration | Notes |
@@ -146,7 +149,7 @@ GigaChat requests are authorized upstream with `Authorization: Bearer <access_to
 | OAuth authorization key | `gigachat_key_config.credentials`, optional `scope`, optional `auth_url` | Default scope is `GIGACHAT_API_PERS`. Bifrost exchanges credentials at `/api/v2/oauth`, caches the token, and refreshes it before expiry. |
 | Explicit access token | `gigachat_key_config.access_token` or key `value` | Useful for tests or short-lived deployments. Bifrost does not refresh explicit tokens. |
 | Password token flow | `gigachat_key_config.user` + `gigachat_key_config.password` | Uses the SDK-compatible `POST <base_url>/v1/token` flow for deployments that expose it. |
-| TLS / mTLS material | `ca_bundle_file`, `cert_file`, `key_file` | Applied to both token and inference clients. `cert_file` and `key_file` must be configured together. |
+| TLS / mTLS material | `ca_bundle_file`, `cert_file`, `key_file` | Transport supplement only. Bearer auth is still required. Applied to both token and inference clients. `cert_file` and `key_file` must be configured together. |
 
 Authentication priority is:
 
@@ -203,7 +206,7 @@ Use `ca_bundle_file` when your runtime does not trust the GigaChat CA chain. Use
   provider.
 </Warning>
 
-Provider-level `network_config.extra_headers` cannot include `Authorization` for GigaChat. Configure one of the auth modes instead.
+Provider-level `network_config.extra_headers` and request-level extra headers cannot include `Authorization` for GigaChat. Configure one of the auth modes instead.
 
 ## Chat Completions
 
@@ -371,6 +374,14 @@ Embeddings use GigaChat v1 `/embeddings`.
 | embedding-vector input shapes | ❌ | Rejected; text input only. |
 
 The response is normalized to OpenAI-compatible embedding data with `usage.prompt_tokens` and `usage.total_tokens` when GigaChat returns usage.
+
+## Count Tokens
+
+Bifrost exposes CountTokens through the gateway `POST /v1/responses/input_tokens` endpoint and sends GigaChat an upstream `POST /v1/tokens/count` request.
+
+The upstream GigaChat payload contains the requested `model` and an ordered `input` array of text strings. Bifrost extracts text from Responses-format input/messages, preserves text order, and rejects empty text or non-text content such as images, audio, and file inputs.
+
+GigaChat `/tokens/count` estimates tokens for text input only. It does not estimate future output tokens and does not count files or images. Bifrost maps the per-input counts to `tokens`, sums them into `input_tokens`, and sets `total_tokens` to the same prompt/input total when no output-token estimate exists. For actual generated usage after a request completes, use the `usage` fields returned by Chat Completions or Responses.
 
 ## Files
 

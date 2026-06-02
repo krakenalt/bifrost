@@ -2449,7 +2449,7 @@
                 },
                 "access_token": {
                   "type": "string",
-                  "description": "Pre-obtained GigaChat access token (can use env. prefix)"
+                  "description": "Pre-obtained GigaChat bearer access token (can use env. prefix)"
                 },
                 "auth_url": {
                   "type": "string",
@@ -2461,11 +2461,11 @@
                 },
                 "cert_file": {
                   "type": "string",
-                  "description": "Client certificate file for GigaChat mTLS"
+                  "description": "Client certificate file for GigaChat mTLS. TLS material supplements bearer auth and does not replace credentials, access_token, user/password, or value."
                 },
                 "key_file": {
                   "type": "string",
-                  "description": "Client private key file for GigaChat mTLS"
+                  "description": "Client private key file for GigaChat mTLS. Must be configured with cert_file."
                 },
                 "key_file_password": {
                   "type": "string",
@@ -2473,7 +2473,7 @@
                 },
                 "ca_bundle_file": {
                   "type": "string",
-                  "description": "CA bundle file for GigaChat TLS roots"
+                  "description": "CA bundle file for GigaChat TLS roots. TLS material supplements bearer auth and does not replace credentials, access_token, user/password, or value."
                 }
               },
               "dependentRequired": {

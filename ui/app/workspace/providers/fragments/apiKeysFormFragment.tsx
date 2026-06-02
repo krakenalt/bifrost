@@ -697,6 +697,7 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 					<Separator className="my-6" />
 					<div className="space-y-2">
 						<FormLabel>Authentication Method</FormLabel>
+						<FormDescription>Bifrost manages GigaChat Authorization and User-Agent headers. TLS files only configure transport.</FormDescription>
 						<Tabs
 							value={gigaChatAuthType}
 							onValueChange={(v) => {
