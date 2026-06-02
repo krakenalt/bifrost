@@ -42,6 +42,23 @@ Key characteristics:
   when declared as a Responses tool.
 </Note>
 
+### Support Matrix and Caveats
+
+| Area | Current contract |
+| ---- | ---------------- |
+| Provider shape | Native GigaChat provider with provider-specific converters, not an OpenAI-compatible shim. |
+| Bearer auth | One bearer source is required: OAuth credentials, explicit access token, password token flow, or legacy key `value` as an access token. |
+| OAuth exchange | `credentials` must be a GigaChat authorization key. Bifrost exchanges it through `auth_url`, defaults `scope` to `GIGACHAT_API_PERS`, caches the token, and refreshes it before expiry. |
+| Explicit token | `access_token` and legacy key `value` are sent as-is and are not refreshed. Use them only for short-lived or externally managed token flows. |
+| Password flow | Requires a deployment that exposes the SDK-compatible `POST <base_url>/v1/token` endpoint. |
+| TLS/mTLS | TLS material supplements bearer auth. `ca_bundle_file` only affects trust roots, and `cert_file`/`key_file` must be configured together for mTLS. |
+| Encrypted private keys | `key_file_password` is reserved for redaction/future compatibility, but encrypted GigaChat client private keys are not supported. Leave it empty. |
+| CountTokens | Text input only through `/v1/tokens/count`; image, audio, and file inputs are rejected, and the response is an input-token estimate only. |
+| Files and attachments | Use the Files API first, then reference pre-uploaded `file_id` values in Responses. Inline file bytes and file URLs are rejected. |
+| Batches | Create/list/retrieve/results and file-backed batch input are supported for chat, Responses, and embeddings rows. Cancel/delete are unsupported. |
+| Reasoning | Chat and Responses converters preserve supported GigaChat reasoning fields, but generic Bifrost reasoning tests remain disabled because they send unsupported OpenAI Responses reasoning controls. |
+| Images | The standalone Bifrost Image Generation, edit, and variation endpoints are unsupported. Only the GigaChat Responses `image_generate` built-in tool can be passed through. |
+
 ## Setup & Configuration
 
 Configure GigaChat with `gigachat_key_config` on each key. The regular `value` field is optional and is treated only as a pre-obtained access token when set.
@@ -53,7 +70,7 @@ Configure GigaChat with `gigachat_key_config` on each key. The regular `value` f
 2. Add or edit **GigaChat**.
 3. Click **Add Key**.
 4. Choose an authentication method:
-   - **Credentials** for the GigaChat authorization key used in OAuth token exchange.
+   - **OAuth Credentials** for the GigaChat authorization key used in OAuth token exchange.
    - **Access token** for a pre-obtained short-lived token.
    - **Password** for deployments that expose the SDK-compatible password token endpoint.
 5. Optionally set `base_url`, `auth_url`, CA bundle, and client certificate fields.
@@ -165,6 +182,42 @@ Authentication priority is:
   before calling GigaChat.
 </Warning>
 
+### Auth Configuration Recipes
+
+Use OAuth credentials for normal GigaChat API access:
+
+```json
+{
+  "gigachat_key_config": {
+    "credentials": "env.GIGACHAT_CREDENTIALS",
+    "scope": "GIGACHAT_API_PERS",
+    "auth_url": "https://ngw.devices.sberbank.ru:9443/api/v2/oauth"
+  }
+}
+```
+
+Use an explicit token only when another system manages token refresh:
+
+```json
+{
+  "gigachat_key_config": {
+    "access_token": "env.GIGACHAT_ACCESS_TOKEN"
+  }
+}
+```
+
+Use password auth only for deployments that expose the SDK-compatible password token endpoint:
+
+```json
+{
+  "gigachat_key_config": {
+    "user": "env.GIGACHAT_USER",
+    "password": "env.GIGACHAT_PASSWORD",
+    "base_url": "https://api.giga.chat"
+  }
+}
+```
+
 ### Endpoint Overrides
 
 Defaults:
@@ -201,9 +254,9 @@ Use `ca_bundle_file` when your runtime does not trust the GigaChat CA chain. Use
 ```
 
 <Warning>
-  `key_file_password` is accepted by the config schema for redaction and future
-  compatibility, but encrypted client private keys are currently rejected by the
-  provider.
+  Do not set `key_file_password`. The field remains reserved for redaction and
+  future compatibility, but encrypted GigaChat client private keys are currently
+  rejected by the UI validation and by the provider TLS setup.
 </Warning>
 
 Provider-level `network_config.extra_headers` and request-level extra headers cannot include `Authorization` for GigaChat. Configure one of the auth modes instead.
