@@ -51,7 +51,7 @@ func TestGigaChatAuthHeaders(t *testing.T) {
 	t.Run("TLSOnlyDoesNotBypassAuth", testGigaChatAuthHeadersTLSOnlyDoesNotBypassAuth)
 	t.Run("OAuthToken", testGigaChatAuthHeadersOAuthToken)
 	t.Run("BlocksProviderAuthorizationExtraHeader", testGigaChatAuthHeadersBlocksProviderAuthorizationExtraHeader)
-	t.Run("ContextAuthorizationOverridesTokenFlow", testGigaChatAuthHeadersContextAuthorizationOverridesTokenFlow)
+	t.Run("RejectsRequestAuthorizationExtraHeader", testGigaChatAuthHeadersRejectsRequestAuthorizationExtraHeader)
 	t.Run("PassesContextVars", testGigaChatAuthHeadersPassesContextVars)
 	t.Run("ForcedRefreshBypassesCachedOAuthToken", testGigaChatAuthHeadersForcedRefreshBypassesCachedOAuthToken)
 	t.Run("ForcedRefreshFallsBackFromExplicitTokenToOAuth", testGigaChatAuthHeadersForcedRefreshFallsBackFromExplicitTokenToOAuth)
@@ -158,10 +158,13 @@ func testGigaChatAuthHeadersBlocksProviderAuthorizationExtraHeader(t *testing.T)
 	if !strings.Contains(bifrostErr.GetErrorString(), "extra_headers") {
 		t.Fatalf("unexpected error: %v", bifrostErr)
 	}
+	if strings.Contains(bifrostErr.GetErrorString(), "request extra headers") {
+		t.Fatalf("unexpected request header bypass hint: %v", bifrostErr)
+	}
 	assertNoGigaChatSecretLeak(t, bifrostErr.String())
 }
 
-func testGigaChatAuthHeadersContextAuthorizationOverridesTokenFlow(t *testing.T) {
+func testGigaChatAuthHeadersRejectsRequestAuthorizationExtraHeader(t *testing.T) {
 	t.Parallel()
 
 	var requestCount atomic.Int32
@@ -178,14 +181,17 @@ func testGigaChatAuthHeadersContextAuthorizationOverridesTokenFlow(t *testing.T)
 	})
 
 	provider := newTestGigaChatProvider(t, time.Now)
-	headers, bifrostErr := provider.buildAuthHeaders(ctx, testGigaChatOAuthKey(server.URL, "", "test-credentials"))
-	if bifrostErr != nil {
-		t.Fatalf("buildAuthHeaders returned error: %v", bifrostErr)
+	_, bifrostErr := provider.buildAuthHeaders(ctx, testGigaChatOAuthKey(server.URL, "", "test-credentials"))
+	if bifrostErr == nil {
+		t.Fatal("expected error, got nil")
 	}
-	assertGigaChatDefaultHeaders(t, headers, "Bearer context-authorization-token")
+	if !strings.Contains(bifrostErr.GetErrorString(), "request extra headers cannot include Authorization") {
+		t.Fatalf("unexpected error: %v", bifrostErr)
+	}
 	if requestCount.Load() != 0 {
 		t.Fatalf("request count mismatch: got %d, want 0", requestCount.Load())
 	}
+	assertNoGigaChatSecretLeak(t, bifrostErr.String())
 }
 
 func testGigaChatAuthHeadersPassesContextVars(t *testing.T) {

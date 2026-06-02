@@ -29,7 +29,6 @@ const (
 )
 
 var gigaChatContextHeaders = map[string]string{
-	"authorization":  gigaChatAuthorizationHeader,
 	"x-session-id":   "X-Session-ID",
 	"x-request-id":   "X-Request-ID",
 	"x-service-id":   "X-Service-ID",
@@ -77,18 +76,19 @@ func (provider *GigaChatProvider) buildAuthHeadersWithRefresh(ctx *schemas.Bifro
 	if bifrostErr := provider.rejectProviderAuthorizationExtraHeader(); bifrostErr != nil {
 		return nil, bifrostErr
 	}
+	if bifrostErr := rejectRequestAuthorizationExtraHeader(ctx); bifrostErr != nil {
+		return nil, bifrostErr
+	}
 
 	headers := map[string]string{
 		gigaChatUserAgentHeader: gigaChatUserAgent,
 	}
 
-	if _, ok := getGigaChatContextHeader(ctx, gigaChatAuthorizationHeader); !ok {
-		accessToken, bifrostErr := provider.getGigaChatAccessTokenWithRefresh(ctx, key, forceRefresh)
-		if bifrostErr != nil {
-			return nil, bifrostErr
-		}
-		headers[gigaChatAuthorizationHeader] = "Bearer " + accessToken
+	accessToken, bifrostErr := provider.getGigaChatAccessTokenWithRefresh(ctx, key, forceRefresh)
+	if bifrostErr != nil {
+		return nil, bifrostErr
 	}
+	headers[gigaChatAuthorizationHeader] = "Bearer " + accessToken
 
 	applyGigaChatProviderContextHeaders(headers, provider.networkConfig.ExtraHeaders)
 	applyGigaChatRequestContextHeaders(headers, ctx)
@@ -97,7 +97,14 @@ func (provider *GigaChatProvider) buildAuthHeadersWithRefresh(ctx *schemas.Bifro
 
 func (provider *GigaChatProvider) rejectProviderAuthorizationExtraHeader() *schemas.BifrostError {
 	if hasGigaChatHeader(provider.networkConfig.ExtraHeaders, gigaChatAuthorizationHeader) {
-		return newGigaChatConfigurationError("network_config.extra_headers cannot include Authorization for GigaChat; configure GigaChat auth material or request extra headers instead")
+		return newGigaChatConfigurationError("network_config.extra_headers cannot include Authorization for GigaChat; configure GigaChat auth material instead")
+	}
+	return nil
+}
+
+func rejectRequestAuthorizationExtraHeader(ctx *schemas.BifrostContext) *schemas.BifrostError {
+	if _, ok := getGigaChatRequestExtraHeader(ctx, gigaChatAuthorizationHeader); ok {
+		return newGigaChatConfigurationError("request extra headers cannot include Authorization for GigaChat; configure GigaChat auth material instead")
 	}
 	return nil
 }
@@ -133,7 +140,7 @@ func applyGigaChatRequestContextHeaders(headers map[string]string, ctx *schemas.
 	}
 	for key, values := range extraHeaders {
 		canonicalHeader, ok := getGigaChatContextHeaderName(key)
-		if !ok {
+		if !ok || canonicalHeader == gigaChatAuthorizationHeader {
 			continue
 		}
 		for _, value := range values {
@@ -145,7 +152,7 @@ func applyGigaChatRequestContextHeaders(headers map[string]string, ctx *schemas.
 	}
 }
 
-func getGigaChatContextHeader(ctx *schemas.BifrostContext, headerName string) (string, bool) {
+func getGigaChatRequestExtraHeader(ctx *schemas.BifrostContext, headerName string) (string, bool) {
 	if ctx == nil {
 		return "", false
 	}
