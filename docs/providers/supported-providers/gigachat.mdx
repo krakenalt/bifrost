@@ -265,6 +265,8 @@ GigaChat Chat Completions supports user-defined function tools.
 
 For v1 chat, Bifrost maps request reasoning controls to GigaChat `reasoning_effort` and preserves model-provided `reasoning_content` on non-streaming and streaming assistant outputs. Reasoning details are supported for text-like reasoning entries; unsupported non-text reasoning detail types return a conversion error.
 
+This is partial reasoning passthrough and converter-level support, not full generic Bifrost comprehensive reasoning support. The generic reasoning suite remains disabled for GigaChat because it sends Responses-only reasoning fields that GigaChat rejects, including `include`, `reasoning.generate_summary`, `reasoning.summary`, and `reasoning.max_tokens`. Live reasoning smoke coverage is opt-in through the GigaChat provider integration test by setting `GIGACHAT_REASONING_MODEL`.
+
 ### Unsupported Parameters
 
 GigaChat Chat Completions rejects OpenAI-only or provider-mismatched fields such as `audio`, `frequency_penalty`, `presence_penalty`, `logit_bias`, `logprobs`, `top_logprobs`, `metadata`, `modalities`, `parallel_tool_calls: true`, `prediction`, `prompt_cache_key`, `prompt_cache_retention`, unsupported `response_format` types, `safety_identifier`, `seed`, `service_tier`, `stream_options`, `store: true`, `top_k`, `speed`, `inference_geo`, `task_budget`, `user`, `verbosity`, `web_search_options`, `mcp_servers`, `container`, `cache_control`, and `context_management`.

@@ -938,7 +938,7 @@ func GigaChatComprehensiveTestConfig() ComprehensiveTestConfig {
 			Transcription:              false,
 			TranscriptionStream:        false,
 			Embedding:                  true,
-			Reasoning:                  false,
+			Reasoning:                  false, // Partial passthrough only; the generic suite sends unsupported Responses reasoning fields.
 			ListModels:                 true,
 			ImageGeneration:            false,
 			ImageGenerationStream:      false,
