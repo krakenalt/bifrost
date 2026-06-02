@@ -25,7 +25,7 @@ const gigaChatOAuthRefreshLeeway = time.Minute
 const (
 	gigaChatAuthorizationHeader = "Authorization"
 	gigaChatUserAgentHeader     = "User-Agent"
-	gigaChatUserAgent           = "GigaChat-python-lib"
+	gigaChatUserAgent           = "GigaChat-Bifrost-Provider"
 )
 
 var gigaChatContextHeaders = map[string]string{

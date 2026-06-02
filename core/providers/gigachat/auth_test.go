@@ -46,6 +46,7 @@ func TestGigaChatAuthHeaders(t *testing.T) {
 	t.Parallel()
 
 	t.Run("ExplicitAccessToken", testGigaChatAuthHeadersExplicitAccessToken)
+	t.Run("UserAgentLiteral", testGigaChatAuthHeadersUserAgentLiteral)
 	t.Run("KeyValueAccessToken", testGigaChatAuthHeadersKeyValueAccessToken)
 	t.Run("OAuthToken", testGigaChatAuthHeadersOAuthToken)
 	t.Run("BlocksProviderAuthorizationExtraHeader", testGigaChatAuthHeadersBlocksProviderAuthorizationExtraHeader)
@@ -68,6 +69,23 @@ func testGigaChatAuthHeadersExplicitAccessToken(t *testing.T) {
 		t.Fatalf("buildAuthHeaders returned error: %v", bifrostErr)
 	}
 	assertGigaChatDefaultHeaders(t, headers, "Bearer explicit-access-token")
+}
+
+func testGigaChatAuthHeadersUserAgentLiteral(t *testing.T) {
+	t.Parallel()
+
+	provider := newTestGigaChatProvider(t, time.Now)
+	headers, bifrostErr := provider.buildAuthHeaders(testBifrostContext(), schemas.Key{
+		GigaChatKeyConfig: &schemas.GigaChatKeyConfig{
+			AccessToken: schemas.NewEnvVar("explicit-access-token"),
+		},
+	})
+	if bifrostErr != nil {
+		t.Fatalf("buildAuthHeaders returned error: %v", bifrostErr)
+	}
+	if got := headers[gigaChatUserAgentHeader]; got != "GigaChat-Bifrost-Provider" {
+		t.Fatalf("user-agent header mismatch: got %q, want %q", got, "GigaChat-Bifrost-Provider")
+	}
 }
 
 func testGigaChatAuthHeadersKeyValueAccessToken(t *testing.T) {
