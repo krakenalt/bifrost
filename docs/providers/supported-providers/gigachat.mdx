@@ -571,6 +571,29 @@ response, err := client.ChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
 })
 ```
 
+## Live Test Environment
+
+GigaChat live tests are opt-in. The default GitHub workflows do not configure GigaChat secrets, so deterministic provider tests run normally and live GigaChat scenarios skip when credentials are absent.
+
+`make test-core PROVIDER=gigachat` runs the comprehensive provider harness. It accepts any one of these auth setups:
+
+| Auth setup | Required env vars | Notes |
+| ---------- | ----------------- | ----- |
+| Explicit access token | `GIGACHAT_ACCESS_TOKEN` | Used as-is; Bifrost does not refresh explicit tokens. |
+| OAuth credentials | `GIGACHAT_CREDENTIALS` | `GIGACHAT_SCOPE` is optional and defaults to `GIGACHAT_API_PERS`. |
+| Password flow | `GIGACHAT_USER`, `GIGACHAT_PASSWORD`, `GIGACHAT_BASE_URL` | `GIGACHAT_BASE_URL` is required because password token deployments expose provider-specific endpoints. |
+
+Optional comprehensive-test env vars: `GIGACHAT_CHAT_MODEL`, `GIGACHAT_EMBEDDING_MODEL`, `GIGACHAT_AUTH_URL`, `GIGACHAT_BASE_URL`, `GIGACHAT_CA_BUNDLE_FILE`, and the paired `GIGACHAT_CERT_FILE` + `GIGACHAT_KEY_FILE`. `GIGACHAT_KEY_FILE_PASSWORD` is intentionally skipped because encrypted client private keys are not supported.
+
+The provider-level integration smoke test is separate and can be run with:
+
+```bash
+cd core
+go test ./providers/gigachat -run TestGigaChatIntegration
+```
+
+That integration test requires either `GIGACHAT_CREDENTIALS` + `GIGACHAT_SCOPE` or `GIGACHAT_USER` + `GIGACHAT_PASSWORD` + `GIGACHAT_BASE_URL`. Additional smoke paths are opt-in: set `GIGACHAT_REASONING_MODEL` for reasoning, `GIGACHAT_ENABLE_BATCH_TEST=1` for batch create/retrieve, or `GIGACHAT_ENABLE_WEB_SEARCH_TEST=1` for the GigaChat web search built-in. Model overrides are available through `GIGACHAT_CHAT_MODEL`, `GIGACHAT_EMBEDDING_MODEL`, `GIGACHAT_BATCH_MODEL`, `GIGACHAT_REASONING_EFFORT`, and `GIGACHAT_WEB_SEARCH_MODEL`.
+
 ## External References
 
 - [GigaChat REST API authorization](https://developers.sber.ru/docs/ru/gigachat/api/reference/rest/gigachat-api)
