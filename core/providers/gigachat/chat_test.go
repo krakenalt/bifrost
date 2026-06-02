@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -1008,6 +1009,13 @@ func newTestGigaChatChatProvider(t *testing.T, baseURL string) *GigaChatProvider
 	if err != nil {
 		t.Fatalf("NewGigaChatProvider returned error: %v", err)
 	}
+	dialer := &net.Dialer{}
+	provider.client.Dial = func(addr string) (net.Conn, error) {
+		return dialer.Dial("tcp", addr)
+	}
+	provider.client.DialTimeout = nil
+	provider.streamingClient.Dial = provider.client.Dial
+	provider.streamingClient.DialTimeout = nil
 	return provider
 }
 

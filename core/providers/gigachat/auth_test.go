@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -987,6 +988,13 @@ func newTestGigaChatProvider(t *testing.T, now func() time.Time) *GigaChatProvid
 	if err != nil {
 		t.Fatalf("NewGigaChatProvider returned error: %v", err)
 	}
+	dialer := &net.Dialer{}
+	provider.client.Dial = func(addr string) (net.Conn, error) {
+		return dialer.Dial("tcp", addr)
+	}
+	provider.client.DialTimeout = nil
+	provider.streamingClient.Dial = provider.client.Dial
+	provider.streamingClient.DialTimeout = nil
 	provider.tokenCache = newGigaChatTokenCache(now)
 	return provider
 }
