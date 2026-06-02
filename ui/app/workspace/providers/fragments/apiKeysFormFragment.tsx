@@ -921,6 +921,9 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 											{...field}
 										/>
 									</FormControl>
+									<FormDescription>
+										Reserved only. Encrypted GigaChat client private keys are currently unsupported.
+									</FormDescription>
 									<FormMessage />
 								</FormItem>
 							)}
