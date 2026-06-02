@@ -512,6 +512,95 @@ func (provider *GigaChatProvider) responsesWithRefresh(ctx *schemas.BifrostConte
 	return response, nil
 }
 
+func (provider *GigaChatProvider) countTokensWithRefresh(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostResponsesRequest, forceRefresh bool) (*schemas.BifrostCountTokensResponse, *schemas.BifrostError) {
+	ctx = ensureGigaChatContext(ctx)
+	if request == nil {
+		return nil, providerUtils.NewBifrostOperationError("count tokens request is nil", nil)
+	}
+
+	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
+		ctx,
+		request,
+		func() (providerUtils.RequestBodyWithExtraParams, error) {
+			return ToGigaChatCountTokensRequest(request)
+		})
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	headers, bifrostErr := provider.buildAuthHeaders(ctx, key)
+	if forceRefresh {
+		headers, bifrostErr = provider.refreshAuthHeaders(ctx, key)
+	}
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	client, clientErr := buildGigaChatTLSClient(provider.client, key.GigaChatKeyConfig)
+	if clientErr != nil {
+		return nil, newGigaChatConfigurationError(clientErr.Error())
+	}
+
+	req := fasthttp.AcquireRequest()
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseRequest(req)
+	defer fasthttp.ReleaseResponse(resp)
+
+	for headerName, headerValue := range headers {
+		req.Header.Set(headerName, headerValue)
+	}
+	req.SetRequestURI(buildGigaChatRequestURL(ctx, resolveBaseURL(key, provider.networkConfig), gigaChatAPIVersionV1, "/tokens/count", provider.customProviderConfig, schemas.CountTokensRequest))
+	req.Header.SetMethod(http.MethodPost)
+	req.Header.SetContentType("application/json")
+	req.Header.Set("Accept", "application/json")
+	req.SetBody(jsonData)
+
+	sendBackRawRequest := providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest)
+	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
+
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, client, req, resp)
+	defer wait()
+	if bifrostErr != nil {
+		bifrostErr.ExtraFields.Provider = provider.GetProviderKey()
+		return nil, enrichGigaChatError(ctx, bifrostErr, jsonData, nil, sendBackRawRequest, sendBackRawResponse)
+	}
+
+	providerResponseHeaders := providerUtils.ExtractProviderResponseHeaders(resp)
+	ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerResponseHeaders)
+
+	if resp.StatusCode() != fasthttp.StatusOK {
+		bifrostErr := ParseGigaChatError(resp, provider.GetProviderKey())
+		return nil, enrichGigaChatError(ctx, bifrostErr, jsonData, resp.Body(), sendBackRawRequest, sendBackRawResponse)
+	}
+
+	responseBody, err := providerUtils.CheckAndDecodeBody(resp)
+	if err != nil {
+		bifrostErr := newGigaChatProviderResponseError("failed to decode GigaChat count tokens response", err)
+		return nil, enrichGigaChatError(ctx, bifrostErr, jsonData, resp.Body(), sendBackRawRequest, sendBackRawResponse)
+	}
+
+	gigaChatResponse := &GigaChatCountTokensResponse{}
+	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(responseBody, gigaChatResponse, jsonData, sendBackRawRequest, sendBackRawResponse)
+	if bifrostErr != nil {
+		return nil, enrichGigaChatError(ctx, bifrostErr, jsonData, responseBody, sendBackRawRequest, sendBackRawResponse)
+	}
+
+	response := ToBifrostCountTokensResponse(provider.GetProviderKey(), gigaChatResponse, request.Model)
+	if response == nil {
+		return nil, newGigaChatProviderResponseError("GigaChat count tokens response is empty", nil)
+	}
+	response.ExtraFields.Latency = latency.Milliseconds()
+	response.ExtraFields.ProviderResponseHeaders = providerResponseHeaders
+	if sendBackRawRequest {
+		response.ExtraFields.RawRequest = rawRequest
+	}
+	if sendBackRawResponse {
+		response.ExtraFields.RawResponse = rawResponse
+	}
+
+	return response, nil
+}
+
 func (provider *GigaChatProvider) responsesStreamWithRefresh(
 	ctx *schemas.BifrostContext,
 	postHookRunner schemas.PostHookRunner,
@@ -875,9 +964,17 @@ func (provider *GigaChatProvider) ResponsesStream(ctx *schemas.BifrostContext, p
 	return responseChan, bifrostErr
 }
 
-// CountTokens is not supported by the GigaChat provider skeleton.
-func (provider *GigaChatProvider) CountTokens(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostResponsesRequest) (*schemas.BifrostCountTokensResponse, *schemas.BifrostError) {
-	return nil, provider.unsupported(schemas.CountTokensRequest)
+// CountTokens sends a v1 tokens/count request to GigaChat.
+func (provider *GigaChatProvider) CountTokens(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostResponsesRequest) (*schemas.BifrostCountTokensResponse, *schemas.BifrostError) {
+	if err := providerUtils.CheckOperationAllowed(schemas.GigaChat, provider.customProviderConfig, schemas.CountTokensRequest); err != nil {
+		return nil, err
+	}
+
+	response, bifrostErr := provider.countTokensWithRefresh(ctx, key, request, false)
+	if isGigaChatUnauthorizedError(bifrostErr) {
+		return provider.countTokensWithRefresh(ctx, key, request, true)
+	}
+	return response, bifrostErr
 }
 
 // Embedding sends a non-streaming v1 embeddings request to GigaChat.

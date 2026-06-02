@@ -138,6 +138,29 @@ func TestGigaChatIntegration(t *testing.T) {
 		}
 	})
 
+	t.Run("CountTokens", func(t *testing.T) {
+		ctx := newGigaChatIntegrationContext(t)
+		response, bifrostErr := provider.CountTokens(ctx, key, gigaChatIntegrationCountTokensRequest(config.chatModel))
+		if bifrostErr != nil {
+			failGigaChatIntegrationBifrostError(t, "count tokens", bifrostErr)
+		}
+		if response == nil {
+			t.Fatal("count tokens returned nil response")
+		}
+		if response.InputTokens <= 0 {
+			t.Fatalf("count tokens returned invalid input token count: %#v", response)
+		}
+		if response.TotalTokens == nil || *response.TotalTokens < response.InputTokens {
+			t.Fatalf("count tokens returned invalid total tokens: %#v", response)
+		}
+		if len(response.Tokens) != 2 {
+			t.Fatalf("count tokens returned unexpected per-input counts: %#v", response.Tokens)
+		}
+		if response.ExtraFields.Provider != schemas.GigaChat {
+			t.Fatalf("provider mismatch: got %q, want %q", response.ExtraFields.Provider, schemas.GigaChat)
+		}
+	})
+
 	t.Run("ResponsesStream", func(t *testing.T) {
 		ctx := newGigaChatIntegrationContext(t)
 		stream, bifrostErr := provider.ResponsesStream(ctx, testGigaChatPostHookRunner, nil, key, gigaChatIntegrationResponsesRequest(config.chatModel))
@@ -371,6 +394,22 @@ func gigaChatIntegrationResponsesRequest(model string) *schemas.BifrostResponses
 		}},
 		Params: &schemas.ResponsesParameters{
 			MaxOutputTokens: &maxTokens,
+		},
+	}
+}
+
+func gigaChatIntegrationCountTokensRequest(model string) *schemas.BifrostResponsesRequest {
+	return &schemas.BifrostResponsesRequest{
+		Model: model,
+		Input: []schemas.ResponsesMessage{
+			{
+				Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+				Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("Привет, как дела?")},
+			},
+			{
+				Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+				Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("Hello, how are you?")},
+			},
 		},
 	}
 }
