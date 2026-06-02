@@ -526,7 +526,7 @@ func validateProviderKeyURL(provider schemas.ModelProvider, key schemas.Key) err
 			}
 		}
 		if !key.Value.IsSet() && (key.GigaChatKeyConfig == nil || !key.GigaChatKeyConfig.HasAuthMaterial()) {
-			return fmt.Errorf("gigachat key requires value or gigachat_key_config auth material")
+			return fmt.Errorf("gigachat key requires value access token or gigachat_key_config bearer auth material")
 		}
 	}
 	return nil

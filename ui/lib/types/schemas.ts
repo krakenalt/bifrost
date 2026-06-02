@@ -284,7 +284,7 @@ function isGigaChatAuthConfigured(config: z.infer<typeof gigachatKeyConfigSchema
 	if (isEnvVarSet(config.user) && isEnvVarSet(config.password)) {
 		return true;
 	}
-	return isStringSet(config.cert_file) && isStringSet(config.key_file);
+	return false;
 }
 
 // Model provider key schema
@@ -342,7 +342,7 @@ export const modelProviderKeySchema = z
 						: ["gigachat_key_config", "credentials"];
 			ctx.addIssue({
 				code: "custom",
-				message: "GigaChat credentials, access token, user/password, or certificate/key auth is required",
+				message: "GigaChat credentials, access token, user/password, or key value access token is required",
 				path: authIssuePath,
 			});
 			return;

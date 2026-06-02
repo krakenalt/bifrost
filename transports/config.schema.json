@@ -2485,7 +2485,30 @@
               },
               "additionalProperties": false
             }
-          }
+          },
+          "anyOf": [
+            {
+              "required": ["value"]
+            },
+            {
+              "required": ["gigachat_key_config"],
+              "properties": {
+                "gigachat_key_config": {
+                  "anyOf": [
+                    {
+                      "required": ["credentials"]
+                    },
+                    {
+                      "required": ["access_token"]
+                    },
+                    {
+                      "required": ["user", "password"]
+                    }
+                  ]
+                }
+              }
+            }
+          ]
         }
       ]
     },

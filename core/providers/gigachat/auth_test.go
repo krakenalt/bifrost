@@ -48,6 +48,7 @@ func TestGigaChatAuthHeaders(t *testing.T) {
 	t.Run("ExplicitAccessToken", testGigaChatAuthHeadersExplicitAccessToken)
 	t.Run("UserAgentLiteral", testGigaChatAuthHeadersUserAgentLiteral)
 	t.Run("KeyValueAccessToken", testGigaChatAuthHeadersKeyValueAccessToken)
+	t.Run("TLSOnlyDoesNotBypassAuth", testGigaChatAuthHeadersTLSOnlyDoesNotBypassAuth)
 	t.Run("OAuthToken", testGigaChatAuthHeadersOAuthToken)
 	t.Run("BlocksProviderAuthorizationExtraHeader", testGigaChatAuthHeadersBlocksProviderAuthorizationExtraHeader)
 	t.Run("ContextAuthorizationOverridesTokenFlow", testGigaChatAuthHeadersContextAuthorizationOverridesTokenFlow)
@@ -99,6 +100,25 @@ func testGigaChatAuthHeadersKeyValueAccessToken(t *testing.T) {
 		t.Fatalf("buildAuthHeaders returned error: %v", bifrostErr)
 	}
 	assertGigaChatDefaultHeaders(t, headers, "Bearer key-value-access-token")
+}
+
+func testGigaChatAuthHeadersTLSOnlyDoesNotBypassAuth(t *testing.T) {
+	t.Parallel()
+
+	provider := newTestGigaChatProvider(t, time.Now)
+	_, bifrostErr := provider.buildAuthHeaders(testBifrostContext(), schemas.Key{
+		GigaChatKeyConfig: &schemas.GigaChatKeyConfig{
+			CertFile:     "/secure/client.pem",
+			KeyFile:      "/secure/client.key",
+			CABundleFile: "/secure/ca.pem",
+		},
+	})
+	if bifrostErr == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(bifrostErr.GetErrorString(), "access_token, credentials, or user/password") {
+		t.Fatalf("unexpected error: %v", bifrostErr)
+	}
 }
 
 func testGigaChatAuthHeadersOAuthToken(t *testing.T) {

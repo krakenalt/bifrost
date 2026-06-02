@@ -328,7 +328,7 @@ func (config *GigaChatKeyConfig) Validate() error {
 	return nil
 }
 
-// HasAuthMaterial reports whether the config contains a usable auth mode.
+// HasAuthMaterial reports whether the config contains a usable bearer auth mode.
 func (config *GigaChatKeyConfig) HasAuthMaterial() bool {
 	if config == nil {
 		return false
@@ -339,7 +339,18 @@ func (config *GigaChatKeyConfig) HasAuthMaterial() bool {
 	if config.User.IsSet() && config.Password.IsSet() {
 		return true
 	}
-	return strings.TrimSpace(config.CertFile) != "" && strings.TrimSpace(config.KeyFile) != ""
+	return false
+}
+
+// HasTLSMaterial reports whether the config contains TLS or mTLS material.
+func (config *GigaChatKeyConfig) HasTLSMaterial() bool {
+	if config == nil {
+		return false
+	}
+	return strings.TrimSpace(config.CertFile) != "" ||
+		strings.TrimSpace(config.KeyFile) != "" ||
+		config.KeyFilePassword.IsSet() ||
+		strings.TrimSpace(config.CABundleFile) != ""
 }
 
 // Redacted returns a copy of the GigaChat key config with sensitive fields masked.

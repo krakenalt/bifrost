@@ -58,8 +58,81 @@ func TestValidateKeyGigaChat(t *testing.T) {
 		if err == nil {
 			t.Fatal("expected validation error")
 		}
-		if !strings.Contains(err.Error(), "gigachat_key_config auth material") {
+		if !strings.Contains(err.Error(), "bearer auth material") {
 			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("TLSOnlyRejectedAsAuthMaterial", func(t *testing.T) {
+		t.Parallel()
+
+		key := schemas.Key{
+			Name:   "gigachat",
+			Weight: 1,
+			GigaChatKeyConfig: &schemas.GigaChatKeyConfig{
+				CertFile: "/secure/client.pem",
+				KeyFile:  "/secure/client.key",
+			},
+		}
+
+		err := validateKey(schemas.GigaChat, &key)
+		if err == nil {
+			t.Fatal("expected validation error")
+		}
+		if !strings.Contains(err.Error(), "bearer auth material") {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("AccessTokenAllowed", func(t *testing.T) {
+		t.Parallel()
+
+		key := schemas.Key{
+			Name:   "gigachat",
+			Weight: 1,
+			GigaChatKeyConfig: &schemas.GigaChatKeyConfig{
+				AccessToken: schemas.NewEnvVar("env.GIGACHAT_ACCESS_TOKEN"),
+			},
+		}
+
+		if err := validateKey(schemas.GigaChat, &key); err != nil {
+			t.Fatalf("validateKey returned error: %v", err)
+		}
+	})
+
+	t.Run("UserPasswordAllowed", func(t *testing.T) {
+		t.Parallel()
+
+		key := schemas.Key{
+			Name:   "gigachat",
+			Weight: 1,
+			GigaChatKeyConfig: &schemas.GigaChatKeyConfig{
+				User:     schemas.NewEnvVar("env.GIGACHAT_USER"),
+				Password: schemas.NewEnvVar("env.GIGACHAT_PASSWORD"),
+			},
+		}
+
+		if err := validateKey(schemas.GigaChat, &key); err != nil {
+			t.Fatalf("validateKey returned error: %v", err)
+		}
+	})
+
+	t.Run("CredentialsWithTLSAllowed", func(t *testing.T) {
+		t.Parallel()
+
+		key := schemas.Key{
+			Name:   "gigachat",
+			Weight: 1,
+			GigaChatKeyConfig: &schemas.GigaChatKeyConfig{
+				Credentials:  schemas.NewEnvVar("env.GIGACHAT_CREDENTIALS"),
+				CertFile:     "/secure/client.pem",
+				KeyFile:      "/secure/client.key",
+				CABundleFile: "/secure/ca.pem",
+			},
+		}
+
+		if err := validateKey(schemas.GigaChat, &key); err != nil {
+			t.Fatalf("validateKey returned error: %v", err)
 		}
 	})
 
