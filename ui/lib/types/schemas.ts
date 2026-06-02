@@ -267,10 +267,10 @@ export const gigachatKeyConfigSchema = z
 			});
 		}
 
-		if (isEnvVarSet(data.key_file_password) && !hasKeyFile) {
+		if (isEnvVarSet(data.key_file_password)) {
 			ctx.addIssue({
 				code: "custom",
-				message: "Key file password requires certificate and key files",
+				message: "Encrypted GigaChat client private keys are not supported",
 				path: ["key_file_password"],
 			});
 		}
