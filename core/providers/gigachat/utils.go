@@ -18,7 +18,8 @@ import (
 
 var (
 	gigaChatAuthSchemePattern          = regexp.MustCompile(`(?i)\b(bearer|basic)\s+[^ \t\r\n"',}]+`)
-	gigaChatSensitiveAssignmentPattern = regexp.MustCompile(`(?i)\b(authorization|access_token|credentials|password|key_file_password|client_secret|refresh_token)\b\s*[:=]\s*[^ \t\r\n"',}]+`)
+	gigaChatPrivateKeyPattern          = regexp.MustCompile(`(?s)-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----`)
+	gigaChatSensitiveAssignmentPattern = regexp.MustCompile(`(?i)\b(authorization|access_token|credentials|user|username|password|cert_file|key_file|key_file_password|ca_bundle_file|private_key|client_key|client_secret|refresh_token)\b\s*[:=]\s*[^ \t\r\n"',}]+`)
 )
 
 const (
@@ -287,7 +288,7 @@ func redactGigaChatJSONValue(value interface{}) bool {
 
 func isGigaChatSensitiveField(fieldName string) bool {
 	switch strings.ToLower(strings.TrimSpace(fieldName)) {
-	case "authorization", "access_token", "credentials", "password", "key_file_password", "client_secret", "refresh_token":
+	case "authorization", "access_token", "credentials", "user", "username", "password", "cert_file", "key_file", "key_file_password", "ca_bundle_file", "private_key", "client_key", "client_secret", "refresh_token":
 		return true
 	default:
 		return false
@@ -296,6 +297,7 @@ func isGigaChatSensitiveField(fieldName string) bool {
 
 func redactGigaChatSensitiveText(text string) string {
 	redacted := text
+	redacted = gigaChatPrivateKeyPattern.ReplaceAllString(redacted, "<redacted-private-key>")
 	redacted = gigaChatAuthSchemePattern.ReplaceAllString(redacted, "$1 <redacted>")
 	redacted = gigaChatSensitiveAssignmentPattern.ReplaceAllString(redacted, "$1=<redacted>")
 	return redacted
