@@ -632,7 +632,8 @@ func (provider *GigaChatProvider) responsesStreamWithRefresh(
 		stopCancellation := providerUtils.SetupStreamCancellation(ctx, resp.BodyStream(), provider.logger)
 		defer stopCancellation()
 
-		if providerUtils.DrainNonSSEStreamResponse(resp) {
+		reader, drained := providerUtils.DrainNonSSEStreamReader(resp, reader)
+		if drained {
 			ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 			providerUtils.ProcessAndSendError(ctx, postHookRunner, errors.New("provider returned non-SSE response for streaming request"), responseChan, provider.logger, postHookSpanFinalizer)
 			return
