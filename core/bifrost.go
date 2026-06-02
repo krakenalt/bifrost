@@ -6451,6 +6451,9 @@ func (bifrost *Bifrost) handleProviderRequest(provider schemas.Provider, config 
 		if bifrostError != nil {
 			return nil, bifrostError
 		}
+		if passthroughResponse != nil {
+			passthroughResponse.Path = req.BifrostRequest.PassthroughRequest.Path
+		}
 		response.PassthroughResponse = passthroughResponse
 	default:
 		_, model, _ := req.BifrostRequest.GetRequestFields()
