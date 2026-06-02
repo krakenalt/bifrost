@@ -738,7 +738,7 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 								name="key.gigachat_key_config.credentials"
 								render={({ field }) => (
 									<FormItem>
-										<FormLabel>Credentials (Required)</FormLabel>
+										<FormLabel>OAuth Credentials (Required)</FormLabel>
 										<FormControl>
 											<EnvVarInput
 												data-testid="apikey-gigachat-credentials-input"
@@ -748,6 +748,7 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 												{...field}
 											/>
 										</FormControl>
+										<FormDescription>GigaChat authorization key. Bifrost exchanges it for access tokens and refreshes them automatically.</FormDescription>
 										<FormMessage />
 									</FormItem>
 								)}
@@ -766,6 +767,7 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 												value={field.value ?? ""}
 											/>
 										</FormControl>
+										<FormDescription>Defaults to GIGACHAT_API_PERS when left empty.</FormDescription>
 										<FormMessage />
 									</FormItem>
 								)}
@@ -789,6 +791,7 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 											{...field}
 										/>
 									</FormControl>
+									<FormDescription>Short-lived bearer token. Bifrost sends it as-is and does not refresh it.</FormDescription>
 									<FormMessage />
 								</FormItem>
 							)}
@@ -825,6 +828,7 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 												{...field}
 											/>
 										</FormControl>
+										<FormDescription>Requires a GigaChat deployment that exposes the SDK-compatible password token endpoint.</FormDescription>
 										<FormMessage />
 									</FormItem>
 								)}
@@ -848,6 +852,7 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 											value={field.value ?? ""}
 										/>
 									</FormControl>
+									<FormDescription>Overrides the provider base URL. Password auth posts to this URL's /v1/token endpoint.</FormDescription>
 									<FormMessage />
 								</FormItem>
 							)}
@@ -866,6 +871,7 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 											value={field.value ?? ""}
 										/>
 									</FormControl>
+									<FormDescription>OAuth token exchange URL. Used only by the OAuth credentials method.</FormDescription>
 									<FormMessage />
 								</FormItem>
 							)}
@@ -884,6 +890,7 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 											value={field.value ?? ""}
 										/>
 									</FormControl>
+									<FormDescription>Client certificate path for mTLS. Must be configured together with Key File.</FormDescription>
 									<FormMessage />
 								</FormItem>
 							)}
@@ -902,6 +909,7 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 											value={field.value ?? ""}
 										/>
 									</FormControl>
+									<FormDescription>Client private key path for mTLS. Must be configured together with Cert File.</FormDescription>
 									<FormMessage />
 								</FormItem>
 							)}
@@ -911,7 +919,7 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 							name="key.gigachat_key_config.key_file_password"
 							render={({ field }) => (
 								<FormItem>
-									<FormLabel>Key File Password (Optional)</FormLabel>
+									<FormLabel>Key File Password (Unsupported)</FormLabel>
 									<FormControl>
 										<EnvVarInput
 											data-testid="apikey-gigachat-key-file-password-input"
@@ -921,6 +929,9 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 											{...field}
 										/>
 									</FormControl>
+									<FormDescription>
+										Leave empty. Encrypted GigaChat client private keys are currently unsupported.
+									</FormDescription>
 									<FormMessage />
 								</FormItem>
 							)}
@@ -939,6 +950,7 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 											value={field.value ?? ""}
 										/>
 									</FormControl>
+									<FormDescription>CA bundle path for GigaChat TLS verification. This does not authenticate requests.</FormDescription>
 									<FormMessage />
 								</FormItem>
 							)}

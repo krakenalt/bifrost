@@ -330,6 +330,69 @@ type GigaChatEmbeddingUsage struct {
 	TotalTokens  int `json:"total_tokens,omitempty"`
 }
 
+// # COUNT TOKENS TYPES
+
+// GigaChatCountTokensRequest is the v1 /tokens/count request body.
+type GigaChatCountTokensRequest struct {
+	Model       string                 `json:"model"`
+	Input       []string               `json:"input"`
+	ExtraParams map[string]interface{} `json:"-"`
+}
+
+// GetExtraParams returns provider-specific passthrough fields.
+func (request *GigaChatCountTokensRequest) GetExtraParams() map[string]interface{} {
+	if request == nil || request.ExtraParams == nil {
+		return make(map[string]interface{}, 0)
+	}
+	return request.ExtraParams
+}
+
+// GigaChatCountTokensResponse accepts the documented SDK/API response shapes for
+// /tokens/count: a root array, a {data:[...]} wrapper, or an aggregate object.
+type GigaChatCountTokensResponse struct {
+	Object     string                    `json:"object,omitempty"`
+	Model      string                    `json:"model,omitempty"`
+	Data       []GigaChatCountTokensItem `json:"data,omitempty"`
+	Tokens     *int                      `json:"tokens,omitempty"`
+	Characters *int                      `json:"characters,omitempty"`
+	Items      []GigaChatCountTokensItem `json:"-"`
+}
+
+func (response *GigaChatCountTokensResponse) UnmarshalJSON(data []byte) error {
+	var items []GigaChatCountTokensItem
+	if err := json.Unmarshal(data, &items); err == nil {
+		response.Items = items
+		response.Data = items
+		return nil
+	}
+
+	type Alias GigaChatCountTokensResponse
+	var object Alias
+	if err := json.Unmarshal(data, &object); err != nil {
+		return err
+	}
+
+	*response = GigaChatCountTokensResponse(object)
+	if len(response.Data) > 0 {
+		response.Items = response.Data
+		return nil
+	}
+	if response.Tokens != nil {
+		item := GigaChatCountTokensItem{Tokens: *response.Tokens}
+		if response.Characters != nil {
+			item.Characters = *response.Characters
+		}
+		response.Items = []GigaChatCountTokensItem{item}
+	}
+	return nil
+}
+
+// GigaChatCountTokensItem is one token count result for one input string.
+type GigaChatCountTokensItem struct {
+	Tokens     int `json:"tokens"`
+	Characters int `json:"characters,omitempty"`
+}
+
 // # RESPONSES TYPES
 
 // GigaChatResponsesRequest is the v2 chat completions request body used for Bifrost Responses.

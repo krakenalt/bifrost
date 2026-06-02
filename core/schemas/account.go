@@ -289,7 +289,7 @@ type GigaChatKeyConfig struct {
 	BaseURL         string  `json:"base_url,omitempty"`          // API base URL override for this key
 	CertFile        string  `json:"cert_file,omitempty"`         // Client certificate file for mTLS
 	KeyFile         string  `json:"key_file,omitempty"`          // Client private key file for mTLS
-	KeyFilePassword *EnvVar `json:"key_file_password,omitempty"` // Password for encrypted client private key (supports env.*)
+	KeyFilePassword *EnvVar `json:"key_file_password,omitempty"` // Reserved for encrypted client private keys; currently unsupported (supports env.*)
 	CABundleFile    string  `json:"ca_bundle_file,omitempty"`    // CA bundle file for GigaChat TLS roots
 }
 

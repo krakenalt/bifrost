@@ -17,6 +17,7 @@ func testGigaChatErrors(t *testing.T) {
 	t.Run("ParsesOAuthPayloads", testGigaChatErrorParsesOAuthPayloads)
 	t.Run("UsesFallbackForNonJSON", testGigaChatErrorUsesFallbackForNonJSON)
 	t.Run("RedactsRawPayloads", testGigaChatErrorRedactsRawPayloads)
+	t.Run("RedactsExpandedRawAuthMaterial", testGigaChatErrorRedactsExpandedRawAuthMaterial)
 	t.Run("RedactsExistingRawResponse", testGigaChatErrorRedactsExistingRawResponse)
 	t.Run("RedactsStreamingCallbackRawResponse", testGigaChatErrorRedactsStreamingCallbackRawResponse)
 	t.Run("PreservesSafeRawPayloadOrder", testGigaChatErrorPreservesSafeRawPayloadOrder)
@@ -109,12 +110,72 @@ func testGigaChatErrorRedactsRawPayloads(t *testing.T) {
 func testGigaChatErrorRedactsTextPayloads(t *testing.T) {
 	t.Parallel()
 
-	payload := []byte(`error: authorization bearer super-secret-token failed; access_token=super-secret-access; Basic super-secret-basic rejected`)
+	payload := []byte("error: authorization bearer super-secret-token failed; access_token=super-secret-access; user=super-secret-user; password=super-secret-password; key_file=/secure/client.key; Basic super-secret-basic rejected; -----BEGIN PRIVATE KEY-----\nsuper-secret-private-key\n-----END PRIVATE KEY-----")
 	redacted := string(redactGigaChatRawPayload(payload))
-	for _, secret := range []string{"super-secret-token", "super-secret-access", "super-secret-basic"} {
+	for _, secret := range []string{"super-secret-token", "super-secret-access", "super-secret-user", "super-secret-password", "/secure/client.key", "super-secret-basic", "super-secret-private-key"} {
 		if strings.Contains(redacted, secret) {
 			t.Fatalf("text payload leaked %q in %s", secret, redacted)
 		}
+	}
+}
+
+func testGigaChatErrorRedactsExpandedRawAuthMaterial(t *testing.T) {
+	t.Parallel()
+
+	ctx := testBifrostContext()
+	requestBody := []byte(`{
+		"model":"GigaChat",
+		"authorization":"Basic super-secret-request-basic",
+		"credentials":"super-secret-credentials",
+		"user":"super-secret-user",
+		"password":"super-secret-password",
+		"key_file":"/secure/client.key",
+		"cert_file":"/secure/client.crt",
+		"ca_bundle_file":"/secure/ca.crt",
+		"key_file_password":"super-secret-key-password",
+		"private_key":"-----BEGIN PRIVATE KEY-----\nsuper-secret-private-key\n-----END PRIVATE KEY-----",
+		"messages":[{"role":"user","content":"safe prompt"}]
+	}`)
+	responseBody := []byte(`{
+		"message":"bad",
+		"authorization":"Bearer super-secret-response-bearer",
+		"access_token":"super-secret-access-token",
+		"client_secret":"super-secret-client-secret",
+		"refresh_token":"super-secret-refresh-token",
+		"errors":["Basic super-secret-array-basic"]
+	}`)
+	bifrostErr := newGigaChatProviderResponseError("authorization Bearer super-secret-error-bearer failed with password=super-secret-error-password and -----BEGIN PRIVATE KEY-----\nsuper-secret-error-private-key\n-----END PRIVATE KEY-----", nil)
+
+	enriched := enrichGigaChatError(ctx, bifrostErr, requestBody, responseBody, true, true)
+	requestOutput := stringifyGigaChatRaw(enriched.ExtraFields.RawRequest)
+	responseOutput := stringifyGigaChatRaw(enriched.ExtraFields.RawResponse)
+	errorOutput := enriched.String()
+
+	assertGigaChatOutputOmits(t, "raw request", requestOutput, []string{
+		"super-secret-request-basic",
+		"super-secret-credentials",
+		"super-secret-user",
+		"super-secret-password",
+		"/secure/client.key",
+		"/secure/client.crt",
+		"/secure/ca.crt",
+		"super-secret-key-password",
+		"super-secret-private-key",
+	})
+	assertGigaChatOutputOmits(t, "raw response", responseOutput, []string{
+		"super-secret-response-bearer",
+		"super-secret-access-token",
+		"super-secret-client-secret",
+		"super-secret-refresh-token",
+		"super-secret-array-basic",
+	})
+	assertGigaChatOutputOmits(t, "error message", errorOutput, []string{
+		"super-secret-error-bearer",
+		"super-secret-error-password",
+		"super-secret-error-private-key",
+	})
+	if !strings.Contains(requestOutput+responseOutput+errorOutput, "redacted") {
+		t.Fatalf("expected redacted markers, got request=%s response=%s error=%s", requestOutput, responseOutput, errorOutput)
 	}
 }
 
@@ -179,4 +240,13 @@ func stringifyGigaChatRaw(raw interface{}) string {
 		return ""
 	}
 	return string(data)
+}
+
+func assertGigaChatOutputOmits(t *testing.T, label string, output string, secrets []string) {
+	t.Helper()
+	for _, secret := range secrets {
+		if strings.Contains(output, secret) {
+			t.Fatalf("%s leaked %q in %s", label, secret, output)
+		}
+	}
 }

@@ -192,6 +192,9 @@ func testGigaChatRejectsEncryptedKeyPassword(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
+	if !strings.Contains(err.Error(), "encrypted gigachat_key_config.key_file is not supported") {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	if strings.Contains(err.Error(), "super-secret-password") {
 		t.Fatalf("secret leaked in error: %v", err)
 	}

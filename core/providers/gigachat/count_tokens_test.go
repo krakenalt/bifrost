@@ -20,6 +20,7 @@ func TestGigaChatCountTokens(t *testing.T) {
 	t.Run("ConverterRejectsEmptyText", testGigaChatCountTokensConverterRejectsEmptyText)
 	t.Run("ConverterRejectsImageContent", testGigaChatCountTokensConverterRejectsImageContent)
 	t.Run("ConverterRejectsFileContent", testGigaChatCountTokensConverterRejectsFileContent)
+	t.Run("ConverterRejectsAudioContent", testGigaChatCountTokensConverterRejectsAudioContent)
 	t.Run("ResponseMapsTokenSums", testGigaChatCountTokensResponseMapsTokenSums)
 	t.Run("ResponseAcceptsDataWrapper", testGigaChatCountTokensResponseAcceptsDataWrapper)
 	t.Run("ExecutesWithOAuthToken", testGigaChatCountTokensExecutesWithOAuthToken)
@@ -123,6 +124,29 @@ func testGigaChatCountTokensConverterRejectsFileContent(t *testing.T) {
 				Type: schemas.ResponsesInputMessageContentBlockTypeFile,
 				ResponsesInputMessageContentBlockFile: &schemas.ResponsesInputMessageContentBlockFile{
 					FileData: schemas.Ptr("file-data"),
+				},
+			}}},
+		}},
+	})
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "file, image, or audio") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func testGigaChatCountTokensConverterRejectsAudioContent(t *testing.T) {
+	t.Parallel()
+
+	_, err := ToGigaChatCountTokensRequest(&schemas.BifrostResponsesRequest{
+		Model: "GigaChat",
+		Input: []schemas.ResponsesMessage{{
+			Content: &schemas.ResponsesMessageContent{ContentBlocks: []schemas.ResponsesMessageContentBlock{{
+				Type: schemas.ResponsesInputMessageContentBlockTypeAudio,
+				Audio: &schemas.ResponsesInputMessageContentBlockAudio{
+					Format: "mp3",
+					Data:   "audio-data",
 				},
 			}}},
 		}},

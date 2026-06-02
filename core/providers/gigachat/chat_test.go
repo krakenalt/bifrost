@@ -28,6 +28,8 @@ func testGigaChatChatCompletion(t *testing.T) {
 	t.Run("UploadsInlineImageAttachment", testGigaChatChatCompletionUploadsInlineImageAttachment)
 	t.Run("UploadsInlineFileAttachment", testGigaChatChatCompletionUploadsInlineFileAttachment)
 	t.Run("ReusesUploadedAttachmentAfterBackendError", testGigaChatChatCompletionReusesUploadedAttachmentAfterBackendError)
+	t.Run("DoesNotReuseUploadedAttachmentAcrossIndependentRequests", testGigaChatChatCompletionDoesNotReuseUploadedAttachmentAcrossIndependentRequests)
+	t.Run("DoesNotCacheFailedAttachmentUpload", testGigaChatChatCompletionDoesNotCacheFailedAttachmentUpload)
 	t.Run("RejectsUnsupportedTools", testGigaChatChatCompletionRejectsUnsupportedTools)
 	t.Run("RejectsUnsupportedResponseFormat", testGigaChatChatCompletionRejectsUnsupportedResponseFormat)
 	t.Run("MapsProviderErrors", testGigaChatChatCompletionMapsProviderErrors)
@@ -641,6 +643,158 @@ func testGigaChatChatCompletionReusesUploadedAttachmentAfterBackendError(t *test
 	}
 }
 
+func testGigaChatChatCompletionDoesNotReuseUploadedAttachmentAcrossIndependentRequests(t *testing.T) {
+	t.Parallel()
+
+	var uploadRequests atomic.Int32
+	var chatRequests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/v1/files":
+			uploadIndex := uploadRequests.Add(1)
+			if err := request.ParseMultipartForm(1024); err != nil {
+				t.Fatalf("failed to parse upload multipart form: %v", err)
+			}
+			file, _, err := request.FormFile("file")
+			if err != nil {
+				t.Fatalf("failed to read uploaded file: %v", err)
+			}
+			defer file.Close()
+			fileBytes, err := io.ReadAll(file)
+			if err != nil {
+				t.Fatalf("failed to read uploaded bytes: %v", err)
+			}
+			if string(fileBytes) != "%PDF independent" {
+				t.Fatalf("uploaded file bytes mismatch: %q", fileBytes)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"id":"uploaded-independent-` + formatInt32(uploadIndex) + `","object":"file","bytes":16,"created_at":1700000000,"filename":"independent.pdf","purpose":"general"}`))
+		case "/v1/chat/completions":
+			chatIndex := chatRequests.Add(1)
+			body, err := io.ReadAll(request.Body)
+			if err != nil {
+				t.Fatalf("failed to read chat body: %v", err)
+			}
+			assertGigaChatChatBodyAttachment(t, body, "uploaded-independent-"+formatInt32(chatIndex))
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"model":"GigaChat","object":"chat.completion"}`))
+		default:
+			t.Fatalf("unexpected path: %s", request.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	provider := newTestGigaChatChatProvider(t, server.URL)
+	ctx := testBifrostContext()
+	key := testGigaChatAccessTokenKey("file-token")
+
+	firstResponse, firstErr := provider.ChatCompletion(ctx, key, testGigaChatInlineFileChatRequest("independent.pdf", "data:application/pdf;base64,JVBERiBpbmRlcGVuZGVudA=="))
+	if firstErr != nil {
+		t.Fatalf("first ChatCompletion returned error: %v", firstErr)
+	}
+	if firstResponse == nil {
+		t.Fatal("expected first response, got nil")
+	}
+
+	secondResponse, secondErr := provider.ChatCompletion(ctx, key, testGigaChatInlineFileChatRequest("independent.pdf", "data:application/pdf;base64,JVBERiBpbmRlcGVuZGVudA=="))
+	if secondErr != nil {
+		t.Fatalf("second ChatCompletion returned error: %v", secondErr)
+	}
+	if secondResponse == nil {
+		t.Fatal("expected second response, got nil")
+	}
+
+	if uploadRequests.Load() != 2 {
+		t.Fatalf("upload request count mismatch: got %d, want 2", uploadRequests.Load())
+	}
+	if chatRequests.Load() != 2 {
+		t.Fatalf("chat request count mismatch: got %d, want 2", chatRequests.Load())
+	}
+}
+
+func testGigaChatChatCompletionDoesNotCacheFailedAttachmentUpload(t *testing.T) {
+	t.Parallel()
+
+	var uploadRequests atomic.Int32
+	var chatRequests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/v1/files":
+			uploadIndex := uploadRequests.Add(1)
+			if err := request.ParseMultipartForm(1024); err != nil {
+				t.Fatalf("failed to parse upload multipart form: %v", err)
+			}
+			file, _, err := request.FormFile("file")
+			if err != nil {
+				t.Fatalf("failed to read uploaded file: %v", err)
+			}
+			defer file.Close()
+			fileBytes, err := io.ReadAll(file)
+			if err != nil {
+				t.Fatalf("failed to read uploaded bytes: %v", err)
+			}
+			if string(fileBytes) != "stale-secret-inline" {
+				t.Fatalf("uploaded file bytes mismatch: %q", fileBytes)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			if uploadIndex == 1 {
+				w.WriteHeader(http.StatusInternalServerError)
+				_, _ = w.Write([]byte(`{"status":500,"message":"upload failed","id":"stale-file-id"}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{"id":"uploaded-after-error","object":"file","bytes":19,"created_at":1700000000,"filename":"secret.txt","purpose":"general"}`))
+		case "/v1/chat/completions":
+			chatRequests.Add(1)
+			body, err := io.ReadAll(request.Body)
+			if err != nil {
+				t.Fatalf("failed to read chat body: %v", err)
+			}
+			assertGigaChatChatBodyAttachment(t, body, "uploaded-after-error")
+			if strings.Contains(string(body), "stale-file-id") {
+				t.Fatalf("chat body used stale file id: %s", body)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"model":"GigaChat","object":"chat.completion"}`))
+		default:
+			t.Fatalf("unexpected path: %s", request.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	provider := newTestGigaChatChatProvider(t, server.URL)
+	provider.sendBackRawRequest = true
+	provider.sendBackRawResponse = true
+	ctx := testBifrostContext()
+	key := testGigaChatAccessTokenKey("file-token")
+	request := testGigaChatInlineFileChatRequest("secret.txt", "data:text/plain;base64,c3RhbGUtc2VjcmV0LWlubGluZQ==")
+
+	firstResponse, firstErr := provider.ChatCompletion(ctx, key, request)
+	if firstResponse != nil {
+		t.Fatalf("expected nil response from failed upload, got %#v", firstResponse)
+	}
+	if firstErr == nil || firstErr.StatusCode == nil || *firstErr.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("expected upload 500, got %#v", firstErr)
+	}
+	firstErrorOutput := firstErr.String() + stringifyGigaChatRaw(firstErr.ExtraFields.RawRequest) + stringifyGigaChatRaw(firstErr.ExtraFields.RawResponse)
+	if strings.Contains(firstErrorOutput, "stale-secret-inline") || strings.Contains(firstErrorOutput, "c3RhbGUtc2VjcmV0LWlubGluZQ") {
+		t.Fatalf("failed upload leaked inline payload in error output: %s", firstErrorOutput)
+	}
+
+	response, bifrostErr := provider.ChatCompletion(ctx, key, request)
+	if bifrostErr != nil {
+		t.Fatalf("second ChatCompletion returned error: %v", bifrostErr)
+	}
+	if response == nil {
+		t.Fatal("expected second response, got nil")
+	}
+	if uploadRequests.Load() != 2 {
+		t.Fatalf("upload request count mismatch: got %d, want 2", uploadRequests.Load())
+	}
+	if chatRequests.Load() != 1 {
+		t.Fatalf("chat request count mismatch: got %d, want 1", chatRequests.Load())
+	}
+}
+
 func testGigaChatChatCompletionRejectsUnsupportedTools(t *testing.T) {
 	t.Parallel()
 
@@ -1048,6 +1202,28 @@ func testGigaChatChatRequest() *schemas.BifrostChatRequest {
 				"profanity_check": false,
 			},
 		},
+	}
+}
+
+func testGigaChatInlineFileChatRequest(filename string, fileData string) *schemas.BifrostChatRequest {
+	prompt := "Summarize this file."
+	return &schemas.BifrostChatRequest{
+		Model: "GigaChat",
+		Input: []schemas.ChatMessage{{
+			Role: schemas.ChatMessageRoleUser,
+			Content: &schemas.ChatMessageContent{
+				ContentBlocks: []schemas.ChatContentBlock{
+					{Type: schemas.ChatContentBlockTypeText, Text: &prompt},
+					{
+						Type: schemas.ChatContentBlockTypeFile,
+						File: &schemas.ChatInputFile{
+							Filename: &filename,
+							FileData: &fileData,
+						},
+					},
+				},
+			},
+		}},
 	}
 }
 
