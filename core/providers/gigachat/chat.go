@@ -150,7 +150,7 @@ func ToBifrostChatStreamResponse(providerName schemas.ModelProvider, response *G
 		Choices:           choices,
 		Created:           response.Created,
 		Model:             response.Model,
-		Object:            response.Object,
+		Object:            toBifrostGigaChatChatStreamObject(response.Object),
 		SystemFingerprint: response.SystemFingerprint,
 		Usage:             toBifrostGigaChatUsage(response.Usage),
 		ExtraParams:       response.ExtraParams,
@@ -158,6 +158,13 @@ func ToBifrostChatStreamResponse(providerName schemas.ModelProvider, response *G
 			Provider: providerName,
 		},
 	}
+}
+
+func toBifrostGigaChatChatStreamObject(object string) string {
+	if strings.TrimSpace(object) == "" || object == "chat.completion" {
+		return "chat.completion.chunk"
+	}
+	return object
 }
 
 func handleGigaChatChatStreamResponse(providerName schemas.ModelProvider) func([]byte, *schemas.BifrostChatResponse, []byte, bool, bool) (interface{}, interface{}, *schemas.BifrostError) {
