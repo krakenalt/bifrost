@@ -408,7 +408,14 @@ func testGigaChatBatchCreateTransformsFileRows(t *testing.T) {
 	if response.ExtraFields.Provider != schemas.GigaChat {
 		t.Fatalf("provider mismatch: got %q", response.ExtraFields.Provider)
 	}
-	if response.ExtraFields.ProviderResponseHeaders["X-Request-Id"] != "batch-create-request-id" {
+	requestID := ""
+	for key, value := range response.ExtraFields.ProviderResponseHeaders {
+		if strings.EqualFold(key, "x-request-id") {
+			requestID = value
+			break
+		}
+	}
+	if requestID != "batch-create-request-id" {
 		t.Fatalf("provider headers mismatch: %#v", response.ExtraFields.ProviderResponseHeaders)
 	}
 }
