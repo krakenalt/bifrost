@@ -454,7 +454,7 @@ Bifrost maps OpenAI-compatible batch requests to GigaChat `/batches`.
 | Bifrost endpoint | GigaChat `method` | Notes |
 | ---------------- | ----------------- | ----- |
 | `/v1/chat/completions` or `/chat/completions` | `chat_completions` | Rows are converted through the same GigaChat chat request transformer. |
-| `/v1/responses` or `/responses` | `chat_completions` | Rows are converted through the Responses-to-v2-chat transformer. |
+| `/v1/responses` or `/responses` | `responses` | Rows are converted through the Responses-to-v2-chat transformer. |
 | `/v1/embeddings` or `/embeddings` | `embedder` | Rows are converted through the embedding transformer. |
 
 `BatchCreate` accepts either `input_file_id` or an inline `requests` array. When `input_file_id` is used, Bifrost downloads the file through GigaChat Files, transforms the JSONL rows, and submits the transformed body to `POST /batches?method=<method>` as `application/octet-stream`.
