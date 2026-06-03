@@ -22,7 +22,7 @@ import (
 var (
 	gigaChatAuthSchemePattern          = regexp.MustCompile(`(?i)\b(bearer|basic)\s+[^ \t\r\n"',}]+`)
 	gigaChatPrivateKeyPattern          = regexp.MustCompile(`(?s)-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----`)
-	gigaChatSensitiveAssignmentPattern = regexp.MustCompile(`(?i)\b(authorization|access_token|credentials|user|username|password|cert_file|key_file|ca_bundle_file|private_key|client_key|client_secret|refresh_token)\b\s*[:=]\s*[^ \t\r\n"',}]+`)
+	gigaChatSensitiveAssignmentPattern = regexp.MustCompile(`(?i)(["']?)\b(authorization|access_token|credentials|user|username|password|cert_file|key_file|ca_bundle_file|private_key|client_key|client_secret|refresh_token)\b(["']?)(\s*[:=]\s*)("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^ \t\r\n"',}]+)`)
 )
 
 const (
@@ -362,6 +362,38 @@ func redactGigaChatSensitiveText(text string) string {
 	redacted := text
 	redacted = gigaChatPrivateKeyPattern.ReplaceAllString(redacted, "<redacted-private-key>")
 	redacted = gigaChatAuthSchemePattern.ReplaceAllString(redacted, "$1 <redacted>")
-	redacted = gigaChatSensitiveAssignmentPattern.ReplaceAllString(redacted, "$1=<redacted>")
+	redacted = redactGigaChatSensitiveAssignments(redacted)
 	return redacted
+}
+
+func redactGigaChatSensitiveAssignments(text string) string {
+	return gigaChatSensitiveAssignmentPattern.ReplaceAllStringFunc(text, func(match string) string {
+		parts := gigaChatSensitiveAssignmentPattern.FindStringSubmatch(match)
+		if len(parts) != 6 {
+			return "<redacted>"
+		}
+		if parts[1] != parts[3] {
+			return match
+		}
+
+		value := "<redacted>"
+		if quote := firstGigaChatQuote(parts[5]); quote != "" {
+			value = quote + value + quote
+		}
+		return parts[1] + parts[2] + parts[3] + parts[4] + value
+	})
+}
+
+func firstGigaChatQuote(value string) string {
+	if value == "" {
+		return ""
+	}
+	switch value[0] {
+	case '"':
+		return `"`
+	case '\'':
+		return `'`
+	default:
+		return ""
+	}
 }
