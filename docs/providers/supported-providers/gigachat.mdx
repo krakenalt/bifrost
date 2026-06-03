@@ -629,7 +629,7 @@ GigaChat live tests are opt-in. The default GitHub workflows do not configure Gi
 | OAuth credentials | `GIGACHAT_CREDENTIALS` | `GIGACHAT_SCOPE` is optional and defaults to `GIGACHAT_API_PERS`. |
 | Password flow | `GIGACHAT_USER`, `GIGACHAT_PASSWORD`, `GIGACHAT_BASE_URL` | `GIGACHAT_BASE_URL` is required because password token deployments expose provider-specific endpoints. |
 
-Optional comprehensive-test env vars: `GIGACHAT_CHAT_MODEL`, `GIGACHAT_EMBEDDING_MODEL`, `GIGACHAT_AUTH_URL`, `GIGACHAT_BASE_URL`, `GIGACHAT_CA_BUNDLE_FILE`, and the paired `GIGACHAT_CERT_FILE` + `GIGACHAT_KEY_FILE`. `GIGACHAT_KEY_FILE_PASSWORD` is intentionally skipped because encrypted client private keys are not supported.
+Optional comprehensive-test env vars: `GIGACHAT_CHAT_MODEL`, `GIGACHAT_EMBEDDING_MODEL`, `GIGACHAT_AUTH_URL`, `GIGACHAT_BASE_URL`, `GIGACHAT_CA_BUNDLE_FILE`, and the paired `GIGACHAT_CERT_FILE` + `GIGACHAT_KEY_FILE`.
 
 The provider-level integration smoke test is separate and can be run with:
 

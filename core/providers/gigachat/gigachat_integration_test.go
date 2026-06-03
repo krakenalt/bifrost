@@ -36,7 +36,6 @@ type gigaChatIntegrationConfig struct {
 	caBundleFile    string
 	certFile        string
 	keyFile         string
-	keyFileHasPass  bool
 }
 
 func TestGigaChatIntegration(t *testing.T) {
@@ -264,7 +263,6 @@ func loadGigaChatIntegrationConfig(t *testing.T) gigaChatIntegrationConfig {
 		caBundleFile:    gigaChatIntegrationEnv("GIGACHAT_CA_BUNDLE_FILE"),
 		certFile:        gigaChatIntegrationEnv("GIGACHAT_CERT_FILE"),
 		keyFile:         gigaChatIntegrationEnv("GIGACHAT_KEY_FILE"),
-		keyFileHasPass:  gigaChatIntegrationEnv("GIGACHAT_KEY_FILE_PASSWORD") != "",
 	}
 
 	if !config.hasOAuth && !config.hasPassword {
@@ -272,9 +270,6 @@ func loadGigaChatIntegrationConfig(t *testing.T) gigaChatIntegrationConfig {
 	}
 	if (config.certFile == "") != (config.keyFile == "") {
 		t.Fatal("GIGACHAT_CERT_FILE and GIGACHAT_KEY_FILE must be set together")
-	}
-	if config.keyFileHasPass {
-		t.Skip("GIGACHAT_KEY_FILE_PASSWORD is set, but encrypted GigaChat client private keys are not supported")
 	}
 
 	return config
@@ -697,7 +692,6 @@ func redactGigaChatIntegrationSecrets(message string) string {
 		"GIGACHAT_CREDENTIALS",
 		"GIGACHAT_USER",
 		"GIGACHAT_PASSWORD",
-		"GIGACHAT_KEY_FILE_PASSWORD",
 		"GIGACHAT_CERT_FILE",
 		"GIGACHAT_KEY_FILE",
 		"GIGACHAT_CA_BUNDLE_FILE",
