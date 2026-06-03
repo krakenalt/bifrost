@@ -421,6 +421,9 @@ func testGigaChatResponsesThreadStorage(t *testing.T) {
 	if !strings.Contains(string(body), `"storage":{}`) {
 		t.Fatalf("default storage object missing from request: %s", body)
 	}
+	if !strings.Contains(string(body), `"model":"GigaChat-2"`) {
+		t.Fatalf("initial thread request should include model, got %s", body)
+	}
 
 	threadID := "thread-123"
 	metadata := map[string]any{"tenant": "test"}
@@ -438,6 +441,30 @@ func testGigaChatResponsesThreadStorage(t *testing.T) {
 	}
 	if storage.Metadata["tenant"] != "test" {
 		t.Fatalf("storage metadata mismatch: %#v", storage.Metadata)
+	}
+	if gigaChatReq.Model != "" {
+		t.Fatalf("previous_response_id request should omit provider model, got %q", gigaChatReq.Model)
+	}
+	body, err = json.Marshal(gigaChatReq)
+	if err != nil {
+		t.Fatalf("failed to marshal GigaChat request with previous_response_id: %v", err)
+	}
+	if strings.Contains(string(body), `"model"`) {
+		t.Fatalf("previous_response_id request should omit model from provider body, got %s", body)
+	}
+	if !strings.Contains(string(body), `"thread_id":"thread-123"`) {
+		t.Fatalf("previous_response_id request should include thread_id, got %s", body)
+	}
+
+	request.Params = &schemas.ResponsesParameters{
+		Conversation: &threadID,
+	}
+	gigaChatReq, err = ToGigaChatResponsesRequest(request)
+	if err != nil {
+		t.Fatalf("ToGigaChatResponsesRequest with conversation returned error: %v", err)
+	}
+	if gigaChatReq.Model != "" {
+		t.Fatalf("conversation request should omit provider model, got %q", gigaChatReq.Model)
 	}
 
 	store := false

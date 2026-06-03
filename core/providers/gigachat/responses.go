@@ -57,6 +57,9 @@ func ToGigaChatResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) (*G
 	if err := applyGigaChatResponsesParams(gigaChatReq, params); err != nil {
 		return nil, err
 	}
+	if hasGigaChatResponsesThreadID(params) {
+		gigaChatReq.Model = ""
+	}
 	return gigaChatReq, nil
 }
 
@@ -800,9 +803,16 @@ func hasGigaChatResponsesStorageParams(params *schemas.ResponsesParameters) bool
 	if params == nil {
 		return false
 	}
-	return trimStringPtr(params.Conversation) != "" ||
-		trimStringPtr(params.PreviousResponseID) != "" ||
+	return hasGigaChatResponsesThreadID(params) ||
 		(params.Metadata != nil && len(*params.Metadata) > 0)
+}
+
+func hasGigaChatResponsesThreadID(params *schemas.ResponsesParameters) bool {
+	if params == nil {
+		return false
+	}
+	return trimStringPtr(params.Conversation) != "" ||
+		trimStringPtr(params.PreviousResponseID) != ""
 }
 
 func trimStringPtr(value *string) string {
