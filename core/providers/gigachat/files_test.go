@@ -144,6 +144,7 @@ func TestGigaChatFilesHTTP(t *testing.T) {
 	t.Run("UploadMultipart", testGigaChatFileUploadMultipart)
 	t.Run("ListUsesKeyBaseURLAndAuthHeaders", testGigaChatFileListUsesKeyBaseURLAndAuthHeaders)
 	t.Run("ListAppliesLimitAndRawRequest", testGigaChatFileListAppliesLimitAndRawRequest)
+	t.Run("ListPreservesUpstreamPurposeWhenFiltering", testGigaChatFileListPreservesUpstreamPurposeWhenFiltering)
 	t.Run("ListRetrieveDelete", testGigaChatFileListRetrieveDelete)
 	t.Run("ContentRawBytes", testGigaChatFileContentRawBytes)
 	t.Run("ContentBase64Wrapper", testGigaChatFileContentBase64Wrapper)
@@ -456,6 +457,38 @@ func testGigaChatFileListAppliesLimitAndRawRequest(t *testing.T) {
 	}
 	if response.ExtraFields.RawResponse == nil {
 		t.Fatal("expected raw response")
+	}
+}
+
+func testGigaChatFileListPreservesUpstreamPurposeWhenFiltering(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/v1/files" {
+			t.Fatalf("path mismatch: got %s", request.URL.Path)
+		}
+		if request.Method != http.MethodGet {
+			t.Fatalf("method mismatch: got %s, want GET", request.Method)
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"id":"general-file","object":"file","bytes":10,"created_at":1780306293,"filename":"general.txt","purpose":"general"},{"id":"assistant-file","object":"file","bytes":20,"created_at":1780306294,"filename":"assistant.txt","purpose":"assistant"}]}`))
+	}))
+	defer server.Close()
+
+	provider := newTestGigaChatChatProvider(t, server.URL)
+	response, bifrostErr := provider.FileList(testBifrostContext(), []schemas.Key{testGigaChatAccessTokenKey("files-token")}, &schemas.BifrostFileListRequest{
+		Provider: schemas.GigaChat,
+		Purpose:  schemas.FilePurposeAssistants,
+	})
+	if bifrostErr != nil {
+		t.Fatalf("FileList returned error: %v", bifrostErr)
+	}
+	if len(response.Data) != 1 {
+		t.Fatalf("file count mismatch: got %d files: %#v", len(response.Data), response.Data)
+	}
+	if response.Data[0].ID != "assistant-file" || response.Data[0].Purpose != schemas.FilePurposeAssistants {
+		t.Fatalf("unexpected filtered file: %#v", response.Data[0])
 	}
 }
 

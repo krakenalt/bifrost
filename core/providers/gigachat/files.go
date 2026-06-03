@@ -104,11 +104,7 @@ func (provider *GigaChatProvider) fileListWithRefresh(ctx *schemas.BifrostContex
 
 	files := make([]schemas.FileObject, 0, len(gigaChatResponse.Data))
 	for _, file := range gigaChatResponse.Data {
-		var requestedPurpose schemas.FilePurpose
-		if request != nil {
-			requestedPurpose = request.Purpose
-		}
-		converted := toBifrostFileObject(file, requestedPurpose)
+		converted := toBifrostFileObject(file, "")
 		if request != nil && request.Purpose != "" && converted.Purpose != request.Purpose {
 			continue
 		}
