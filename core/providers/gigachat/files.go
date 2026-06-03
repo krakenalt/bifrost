@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
@@ -499,7 +500,16 @@ func looksLikeTextFile(file []byte) bool {
 }
 
 func escapeGigaChatMultipartFilename(filename string) string {
-	return strings.NewReplacer("\\", "\\\\", `"`, "\\\"").Replace(filename)
+	var sanitized strings.Builder
+	sanitized.Grow(len(filename))
+	for _, r := range filename {
+		if unicode.IsControl(r) {
+			sanitized.WriteByte('_')
+			continue
+		}
+		sanitized.WriteRune(r)
+	}
+	return strings.NewReplacer("\\", "\\\\", `"`, "\\\"").Replace(sanitized.String())
 }
 
 func toBifrostFileObject(file GigaChatUploadedFile, requestedPurpose schemas.FilePurpose) schemas.FileObject {

@@ -307,6 +307,72 @@ func TestGigaChatFileUploadMetadata(t *testing.T) {
 	}
 }
 
+func TestGigaChatMultipartFilenameEscaping(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		filename string
+		want     string
+	}{
+		{
+			name:     "normal unicode filename is preserved",
+			filename: "отчет.txt",
+			want:     "отчет.txt",
+		},
+		{
+			name:     "quotes are escaped",
+			filename: `report "final".txt`,
+			want:     `report \"final\".txt`,
+		},
+		{
+			name:     "backslashes are escaped",
+			filename: `dir\file.txt`,
+			want:     `dir\\file.txt`,
+		},
+		{
+			name:     "line feed is replaced",
+			filename: "bad\nname.txt",
+			want:     "bad_name.txt",
+		},
+		{
+			name:     "carriage return is replaced",
+			filename: "bad\rname.txt",
+			want:     "bad_name.txt",
+		},
+		{
+			name:     "crlf is replaced",
+			filename: "bad\r\nname.txt",
+			want:     "bad__name.txt",
+		},
+		{
+			name:     "other control characters are replaced",
+			filename: "bad\x00\t\x7fname.txt",
+			want:     "bad___name.txt",
+		},
+		{
+			name:     "sanitized filename can still escape quotes and backslashes",
+			filename: "bad\r\ndir\\file \"final\".txt",
+			want:     "bad__dir\\\\file \\\"final\\\".txt",
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := escapeGigaChatMultipartFilename(tt.filename)
+			if got != tt.want {
+				t.Fatalf("escapeGigaChatMultipartFilename(%q) = %q, want %q", tt.filename, got, tt.want)
+			}
+			if strings.ContainsAny(got, "\r\n") {
+				t.Fatalf("escaped filename still contains CR/LF: %q", got)
+			}
+		})
+	}
+}
+
 func testGigaChatFileListUsesKeyBaseURLAndAuthHeaders(t *testing.T) {
 	t.Parallel()
 
