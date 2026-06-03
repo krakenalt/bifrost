@@ -243,9 +243,12 @@ func (provider *GigaChatProvider) executeGigaChatFileRequest(
 	rawRequestForError []byte,
 	forceRefresh bool,
 ) ([]byte, map[string]string, string, time.Duration, *schemas.BifrostError) {
-	headers, bifrostErr := provider.buildAuthHeaders(ctx, key)
+	var headers map[string]string
+	var bifrostErr *schemas.BifrostError
 	if forceRefresh {
 		headers, bifrostErr = provider.refreshAuthHeaders(ctx, key)
+	} else {
+		headers, bifrostErr = provider.buildAuthHeaders(ctx, key)
 	}
 	if bifrostErr != nil {
 		return nil, nil, "", 0, bifrostErr
