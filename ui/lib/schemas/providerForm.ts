@@ -144,10 +144,87 @@ const ReplicateKeyConfigSchema = z.object({
 	use_deployments_endpoint: z.boolean(),
 });
 
+const EnvVarOrStringSchema = z.union([z.string(), envVarSchema]);
+
+function isAuthValueSet(value: z.infer<typeof EnvVarOrStringSchema> | undefined): boolean {
+	if (!value) return false;
+	if (typeof value === "string") {
+		return !!value.trim();
+	}
+	return !!value.value?.trim() || !!value.env_var?.trim();
+}
+
+function isStringSet(value: string | undefined): boolean {
+	return !!value?.trim();
+}
+
+const GigaChatKeyConfigSchema = z
+	.object({
+		_auth_type: z.enum(["credentials", "access_token", "password"]).optional(),
+		credentials: EnvVarOrStringSchema.optional(),
+		scope: z.string().optional(),
+		user: EnvVarOrStringSchema.optional(),
+		password: EnvVarOrStringSchema.optional(),
+		access_token: EnvVarOrStringSchema.optional(),
+		auth_url: z.string().optional(),
+		base_url: z.string().optional(),
+		cert_file: z.string().optional(),
+		key_file: z.string().optional(),
+		key_file_password: EnvVarOrStringSchema.optional(),
+		ca_bundle_file: z.string().optional(),
+	})
+	.superRefine((data, ctx) => {
+		const hasUser = isAuthValueSet(data.user);
+		const hasPassword = isAuthValueSet(data.password);
+		if (hasUser && !hasPassword) {
+			ctx.addIssue({
+				code: "custom",
+				path: ["password"],
+				message: "Password is required when user is provided",
+			});
+		}
+		if (hasPassword && !hasUser) {
+			ctx.addIssue({
+				code: "custom",
+				path: ["user"],
+				message: "User is required when password is provided",
+			});
+		}
+
+		const hasCertFile = isStringSet(data.cert_file);
+		const hasKeyFile = isStringSet(data.key_file);
+		if (hasCertFile && !hasKeyFile) {
+			ctx.addIssue({
+				code: "custom",
+				path: ["key_file"],
+				message: "Key file is required when certificate file is provided",
+			});
+		}
+		if (hasKeyFile && !hasCertFile) {
+			ctx.addIssue({
+				code: "custom",
+				path: ["cert_file"],
+				message: "Certificate file is required when key file is provided",
+			});
+		}
+	});
+
+function isGigaChatAuthConfigured(
+	config: z.infer<typeof GigaChatKeyConfigSchema> | undefined,
+	fallbackValue?: z.infer<typeof EnvVarOrStringSchema>,
+): boolean {
+	if (isAuthValueSet(fallbackValue)) return true;
+	if (!config) return false;
+	if (isAuthValueSet(config.credentials) || isAuthValueSet(config.access_token)) {
+		return true;
+	}
+	return isAuthValueSet(config.user) && isAuthValueSet(config.password);
+}
+
 const KeySchema = z.object({
 	id: z.string(),
 	name: z.string().min(1, "Name is required for the key"),
-	value: z.string(),
+	value: EnvVarOrStringSchema.optional().default(""),
 	models: z.array(z.string()),
 	weight: z.number().min(0.1, "Key weights must be between 0.1 and 1").max(1, "Key weights must be between 0.1 and 1"),
 	aliases: z
@@ -158,6 +235,7 @@ const KeySchema = z.object({
 	vertex_key_config: VertexKeyConfigSchema.optional(),
 	bedrock_key_config: BedrockKeyConfigSchema.optional(),
 	replicate_key_config: ReplicateKeyConfigSchema.optional(),
+	gigachat_key_config: GigaChatKeyConfigSchema.optional(),
 	use_for_batch_api: z.boolean().optional(),
 });
 
@@ -251,7 +329,23 @@ export const ProviderFormSchema = z
 			// Validate individual key values based on provider type
 			const effectiveProviderType = data.baseProviderType || data.selectedProvider;
 			data.keys.forEach((key, index) => {
-				if (effectiveProviderType !== "vertex" && effectiveProviderType !== "bedrock" && !key.value.trim()) {
+				if (effectiveProviderType === "gigachat") {
+					if (!isGigaChatAuthConfigured(key.gigachat_key_config, key.value)) {
+						const authIssuePath =
+							key.gigachat_key_config?._auth_type === "access_token"
+								? ["keys", index, "gigachat_key_config", "access_token"]
+								: key.gigachat_key_config?._auth_type === "password"
+									? ["keys", index, "gigachat_key_config", "user"]
+									: ["keys", index, "gigachat_key_config", "credentials"];
+						ctx.addIssue({
+							code: z.ZodIssueCode.custom,
+							message: "GigaChat credentials, access token, user/password, or key value access token is required",
+							path: authIssuePath,
+						});
+					}
+					return;
+				}
+				if (effectiveProviderType !== "vertex" && effectiveProviderType !== "bedrock" && !isAuthValueSet(key.value)) {
 					ctx.addIssue({
 						code: z.ZodIssueCode.custom,
 						message: "API key value cannot be empty",
