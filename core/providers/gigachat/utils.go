@@ -22,7 +22,7 @@ import (
 var (
 	gigaChatAuthSchemePattern          = regexp.MustCompile(`(?i)\b(bearer|basic)\s+[^ \t\r\n"',}]+`)
 	gigaChatPrivateKeyPattern          = regexp.MustCompile(`(?s)-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----`)
-	gigaChatSensitiveAssignmentPattern = regexp.MustCompile(`(?i)\b(authorization|access_token|credentials|user|username|password|cert_file|key_file|key_file_password|ca_bundle_file|private_key|client_key|client_secret|refresh_token)\b\s*[:=]\s*[^ \t\r\n"',}]+`)
+	gigaChatSensitiveAssignmentPattern = regexp.MustCompile(`(?i)\b(authorization|access_token|credentials|user|username|password|cert_file|key_file|ca_bundle_file|private_key|client_key|client_secret|refresh_token)\b\s*[:=]\s*[^ \t\r\n"',}]+`)
 )
 
 const (
@@ -167,9 +167,6 @@ func buildGigaChatTLSClient(baseClient *fasthttp.Client, keyConfig *schemas.Giga
 	if hasCertFile != hasKeyFile {
 		return nil, fmt.Errorf("gigachat_key_config.cert_file and gigachat_key_config.key_file must be set together")
 	}
-	if keyConfig.KeyFilePassword.IsSet() {
-		return nil, fmt.Errorf("encrypted gigachat_key_config.key_file is not supported")
-	}
 	if hasCertFile {
 		certificate, err := tls.LoadX509KeyPair(keyConfig.CertFile, keyConfig.KeyFile)
 		if err != nil {
@@ -215,7 +212,6 @@ func gigaChatTLSMaterialFingerprint(keyConfig *schemas.GigaChatKeyConfig) string
 		strings.TrimSpace(keyConfig.CABundleFile),
 		strings.TrimSpace(keyConfig.CertFile),
 		strings.TrimSpace(keyConfig.KeyFile),
-		fmt.Sprintf("key_file_password:%t", keyConfig.KeyFilePassword.IsSet()),
 	} {
 		_, _ = hash.Write([]byte{0})
 		_, _ = hash.Write([]byte(value))
@@ -237,8 +233,7 @@ func gigaChatAuthTLSKeyConfig(keyConfig *schemas.GigaChatKeyConfig) *schemas.Gig
 func gigaChatKeyConfigHasTLSMaterial(keyConfig *schemas.GigaChatKeyConfig) bool {
 	return strings.TrimSpace(keyConfig.CABundleFile) != "" ||
 		strings.TrimSpace(keyConfig.CertFile) != "" ||
-		strings.TrimSpace(keyConfig.KeyFile) != "" ||
-		keyConfig.KeyFilePassword.IsSet()
+		strings.TrimSpace(keyConfig.KeyFile) != ""
 }
 
 func enrichGigaChatError(ctx *schemas.BifrostContext, bifrostErr *schemas.BifrostError, requestBody []byte, responseBody []byte, sendBackRawRequest bool, sendBackRawResponse bool) *schemas.BifrostError {
@@ -356,7 +351,7 @@ func redactGigaChatJSONValue(value interface{}) bool {
 
 func isGigaChatSensitiveField(fieldName string) bool {
 	switch strings.ToLower(strings.TrimSpace(fieldName)) {
-	case "authorization", "access_token", "credentials", "user", "username", "password", "cert_file", "key_file", "key_file_password", "ca_bundle_file", "private_key", "client_key", "client_secret", "refresh_token":
+	case "authorization", "access_token", "credentials", "user", "username", "password", "cert_file", "key_file", "ca_bundle_file", "private_key", "client_key", "client_secret", "refresh_token":
 		return true
 	default:
 		return false

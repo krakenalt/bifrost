@@ -52,7 +52,6 @@ Key characteristics:
 | Explicit token | `access_token` and legacy key `value` are sent as-is and are not refreshed. Use them only for short-lived or externally managed token flows. |
 | Password flow | Requires a deployment that exposes the SDK-compatible `POST <base_url>/v1/token` endpoint. |
 | TLS/mTLS | TLS material supplements bearer auth. `ca_bundle_file` only affects trust roots, and `cert_file`/`key_file` must be configured together for mTLS. |
-| Encrypted private keys | `key_file_password` is reserved for redaction/future compatibility, but encrypted GigaChat client private keys are not supported. Leave it empty. |
 | CountTokens | Text input only through `/v1/tokens/count`; image, audio, and file inputs are rejected, and the response is an input-token estimate only. |
 | Files and attachments | Use the Files API first, then reference pre-uploaded `file_id` values in Responses. Inline file bytes and file URLs are rejected. |
 | Batches | Create/list/retrieve/results and file-backed batch input are supported for chat, Responses, and embeddings rows. Cancel/delete are unsupported. |
@@ -252,12 +251,6 @@ Use `ca_bundle_file` when your runtime does not trust the GigaChat CA chain. Use
   }
 }
 ```
-
-<Warning>
-  Do not set `key_file_password`. The field remains reserved for redaction and
-  future compatibility, but encrypted GigaChat client private keys are currently
-  rejected by the UI validation and by the provider TLS setup.
-</Warning>
 
 Provider-level `network_config.extra_headers` and request-level extra headers cannot include `Authorization` for GigaChat. Configure one of the auth modes instead.
 
@@ -503,7 +496,7 @@ Current public GigaChat generation model docs list second-generation models such
 
 ## Raw Payloads and Redaction
 
-When raw request or raw response echoing is enabled, Bifrost redacts GigaChat-sensitive values before exposing them through `extra_fields` or errors. Redacted fields include authorization headers, `access_token`, `credentials`, `password`, `key_file_password`, client secrets, and refresh tokens. The GigaChat key-config redaction path also masks configured certificate, key, and CA bundle file paths.
+When raw request or raw response echoing is enabled, Bifrost redacts GigaChat-sensitive values before exposing them through `extra_fields` or errors. Redacted fields include authorization headers, `access_token`, `credentials`, `password`, client secrets, and refresh tokens. The GigaChat key-config redaction path also masks configured certificate, key, and CA bundle file paths.
 
 ## Example Requests
 
