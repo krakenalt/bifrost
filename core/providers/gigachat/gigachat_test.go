@@ -31,6 +31,7 @@ func TestGigachat(t *testing.T) {
 	t.Run("Tools", testGigaChatTools)
 	t.Run("Errors", testGigaChatErrors)
 	t.Run("BuildsTLSClientWithCABundle", testGigaChatBuildsTLSClientWithCABundle)
+	t.Run("ReusesTLSClientWithCABundle", testGigaChatReusesTLSClientWithCABundle)
 	t.Run("BuildsTLSClientWithCertificate", testGigaChatBuildsTLSClientWithCertificate)
 	t.Run("RejectsMissingCertificatePair", testGigaChatRejectsMissingCertificatePair)
 	t.Run("RejectsEncryptedKeyPassword", testGigaChatRejectsEncryptedKeyPassword)
@@ -132,6 +133,38 @@ func testGigaChatBuildsTLSClientWithCABundle(t *testing.T) {
 	}
 	if client.ConnPoolStrategy != fasthttp.FIFO {
 		t.Fatalf("ConnPoolStrategy mismatch: got %v", client.ConnPoolStrategy)
+	}
+}
+
+func testGigaChatReusesTLSClientWithCABundle(t *testing.T) {
+	t.Parallel()
+
+	certPEM, _ := generateGigaChatTestCertificate(t)
+	caBundleFile := writeGigaChatTestFile(t, "ca.pem", certPEM)
+
+	provider, err := NewGigaChatProvider(&schemas.ProviderConfig{}, nil)
+	if err != nil {
+		t.Fatalf("NewGigaChatProvider returned error: %v", err)
+	}
+
+	keyConfig := &schemas.GigaChatKeyConfig{CABundleFile: caBundleFile}
+	client, err := provider.getGigaChatTLSClient(provider.client, gigaChatTLSClientCacheDefault, keyConfig)
+	if err != nil {
+		t.Fatalf("getGigaChatTLSClient returned error: %v", err)
+	}
+	if client == provider.client {
+		t.Fatal("expected a cloned client when TLS material is configured")
+	}
+	if err := os.Remove(caBundleFile); err != nil {
+		t.Fatalf("failed to remove CA bundle file: %v", err)
+	}
+
+	cachedClient, err := provider.getGigaChatTLSClient(provider.client, gigaChatTLSClientCacheDefault, keyConfig)
+	if err != nil {
+		t.Fatalf("getGigaChatTLSClient returned error after CA file removal: %v", err)
+	}
+	if cachedClient != client {
+		t.Fatal("expected cached TLS client to be reused")
 	}
 }
 

@@ -251,7 +251,7 @@ func (provider *GigaChatProvider) executeGigaChatFileRequest(
 		return nil, nil, "", 0, bifrostErr
 	}
 
-	client, clientErr := buildGigaChatTLSClient(provider.client, key.GigaChatKeyConfig)
+	client, clientErr := provider.getGigaChatTLSClient(provider.client, gigaChatTLSClientCacheDefault, key.GigaChatKeyConfig)
 	if clientErr != nil {
 		return nil, nil, "", 0, newGigaChatConfigurationError(clientErr.Error())
 	}

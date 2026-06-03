@@ -2,13 +2,16 @@ package gigachat
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
 	"regexp"
 	"strings"
+	"sync"
 
 	"github.com/bytedance/sonic"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
@@ -28,7 +31,20 @@ const (
 
 	gigaChatAPIVersionV1 = "v1"
 	gigaChatAPIVersionV2 = "v2"
+
+	gigaChatTLSClientCacheAuth      = "auth"
+	gigaChatTLSClientCacheDefault   = "default"
+	gigaChatTLSClientCacheStreaming = "streaming"
 )
+
+type gigaChatTLSClientCache struct {
+	mu      sync.Mutex
+	clients map[string]*fasthttp.Client
+}
+
+func newGigaChatTLSClientCache() *gigaChatTLSClientCache {
+	return &gigaChatTLSClientCache{clients: make(map[string]*fasthttp.Client)}
+}
 
 func resolveAuthURL(key schemas.Key) string {
 	if key.GigaChatKeyConfig != nil {
@@ -164,6 +180,54 @@ func buildGigaChatTLSClient(baseClient *fasthttp.Client, keyConfig *schemas.Giga
 
 	client.TLSConfig = tlsConfig
 	return client, nil
+}
+
+func (provider *GigaChatProvider) getGigaChatTLSClient(baseClient *fasthttp.Client, cacheKind string, keyConfig *schemas.GigaChatKeyConfig) (*fasthttp.Client, error) {
+	if keyConfig == nil || !gigaChatKeyConfigHasTLSMaterial(keyConfig) {
+		return baseClient, nil
+	}
+	if provider == nil || provider.tlsClientCache == nil {
+		return buildGigaChatTLSClient(baseClient, keyConfig)
+	}
+
+	cacheKey := cacheKind + ":" + gigaChatTLSMaterialFingerprint(keyConfig)
+	provider.tlsClientCache.mu.Lock()
+	defer provider.tlsClientCache.mu.Unlock()
+
+	if client := provider.tlsClientCache.clients[cacheKey]; client != nil {
+		return client, nil
+	}
+
+	client, err := buildGigaChatTLSClient(baseClient, keyConfig)
+	if err != nil {
+		return nil, err
+	}
+	provider.tlsClientCache.clients[cacheKey] = client
+	return client, nil
+}
+
+func gigaChatTLSMaterialFingerprint(keyConfig *schemas.GigaChatKeyConfig) string {
+	if keyConfig == nil {
+		return ""
+	}
+	hash := sha256.New()
+	for _, value := range []string{
+		strings.TrimSpace(keyConfig.CABundleFile),
+		strings.TrimSpace(keyConfig.CertFile),
+		strings.TrimSpace(keyConfig.KeyFile),
+		fmt.Sprintf("key_file_password:%t", keyConfig.KeyFilePassword.IsSet()),
+	} {
+		_, _ = hash.Write([]byte{0})
+		_, _ = hash.Write([]byte(value))
+	}
+	return hex.EncodeToString(hash.Sum(nil))
+}
+
+func gigaChatAuthTLSKeyConfig(keyConfig *schemas.GigaChatKeyConfig) *schemas.GigaChatKeyConfig {
+	if keyConfig == nil || strings.TrimSpace(keyConfig.CABundleFile) == "" {
+		return nil
+	}
+	return &schemas.GigaChatKeyConfig{CABundleFile: strings.TrimSpace(keyConfig.CABundleFile)}
 }
 
 func gigaChatKeyConfigHasTLSMaterial(keyConfig *schemas.GigaChatKeyConfig) bool {

@@ -26,6 +26,7 @@ type GigaChatProvider struct {
 	sendBackRawResponse  bool
 	customProviderConfig *schemas.CustomProviderConfig
 	tokenCache           *gigaChatTokenCache
+	tlsClientCache       *gigaChatTLSClientCache
 }
 
 // NewGigaChatProvider creates a new GigaChat provider instance.
@@ -62,6 +63,7 @@ func NewGigaChatProvider(config *schemas.ProviderConfig, logger schemas.Logger) 
 		sendBackRawResponse:  config.SendBackRawResponse,
 		customProviderConfig: config.CustomProviderConfig,
 		tokenCache:           newGigaChatTokenCache(time.Now),
+		tlsClientCache:       newGigaChatTLSClientCache(),
 	}, nil
 }
 
@@ -99,7 +101,7 @@ func (provider *GigaChatProvider) chatCompletion(ctx *schemas.BifrostContext, ke
 		return nil, bifrostErr
 	}
 
-	client, clientErr := buildGigaChatTLSClient(provider.client, key.GigaChatKeyConfig)
+	client, clientErr := provider.getGigaChatTLSClient(provider.client, gigaChatTLSClientCacheDefault, key.GigaChatKeyConfig)
 	if clientErr != nil {
 		return nil, newGigaChatConfigurationError(clientErr.Error())
 	}
@@ -191,7 +193,7 @@ func (provider *GigaChatProvider) chatCompletionStream(
 		return nil, bifrostErr
 	}
 
-	client, clientErr := buildGigaChatTLSClient(provider.streamingClient, key.GigaChatKeyConfig)
+	client, clientErr := provider.getGigaChatTLSClient(provider.streamingClient, gigaChatTLSClientCacheStreaming, key.GigaChatKeyConfig)
 	if clientErr != nil {
 		return nil, newGigaChatConfigurationError(clientErr.Error())
 	}
@@ -260,7 +262,7 @@ func (provider *GigaChatProvider) listModelsByKeyWithRefresh(ctx *schemas.Bifros
 		return nil, bifrostErr
 	}
 
-	client, clientErr := buildGigaChatTLSClient(provider.client, key.GigaChatKeyConfig)
+	client, clientErr := provider.getGigaChatTLSClient(provider.client, gigaChatTLSClientCacheDefault, key.GigaChatKeyConfig)
 	if clientErr != nil {
 		return nil, newGigaChatConfigurationError(clientErr.Error())
 	}
@@ -348,7 +350,7 @@ func (provider *GigaChatProvider) embeddingWithRefresh(ctx *schemas.BifrostConte
 		return nil, bifrostErr
 	}
 
-	client, clientErr := buildGigaChatTLSClient(provider.client, key.GigaChatKeyConfig)
+	client, clientErr := provider.getGigaChatTLSClient(provider.client, gigaChatTLSClientCacheDefault, key.GigaChatKeyConfig)
 	if clientErr != nil {
 		return nil, newGigaChatConfigurationError(clientErr.Error())
 	}
@@ -446,7 +448,7 @@ func (provider *GigaChatProvider) responsesWithRefresh(ctx *schemas.BifrostConte
 		return nil, bifrostErr
 	}
 
-	client, clientErr := buildGigaChatTLSClient(provider.client, key.GigaChatKeyConfig)
+	client, clientErr := provider.getGigaChatTLSClient(provider.client, gigaChatTLSClientCacheDefault, key.GigaChatKeyConfig)
 	if clientErr != nil {
 		return nil, newGigaChatConfigurationError(clientErr.Error())
 	}
@@ -536,7 +538,7 @@ func (provider *GigaChatProvider) countTokensWithRefresh(ctx *schemas.BifrostCon
 		return nil, bifrostErr
 	}
 
-	client, clientErr := buildGigaChatTLSClient(provider.client, key.GigaChatKeyConfig)
+	client, clientErr := provider.getGigaChatTLSClient(provider.client, gigaChatTLSClientCacheDefault, key.GigaChatKeyConfig)
 	if clientErr != nil {
 		return nil, newGigaChatConfigurationError(clientErr.Error())
 	}
@@ -638,7 +640,7 @@ func (provider *GigaChatProvider) responsesStreamWithRefresh(
 		return nil, bifrostErr
 	}
 
-	client, clientErr := buildGigaChatTLSClient(provider.streamingClient, key.GigaChatKeyConfig)
+	client, clientErr := provider.getGigaChatTLSClient(provider.streamingClient, gigaChatTLSClientCacheStreaming, key.GigaChatKeyConfig)
 	if clientErr != nil {
 		return nil, newGigaChatConfigurationError(clientErr.Error())
 	}

@@ -446,7 +446,7 @@ func (provider *GigaChatProvider) requestGigaChatOAuthToken(ctx *schemas.Bifrost
 	req.Header.Set("Authorization", "Basic "+authConfig.credentials)
 	req.SetBodyString(form.Encode())
 
-	client, err := buildGigaChatTLSClient(provider.client, authConfig.keyConfig)
+	client, err := provider.getGigaChatTLSClient(provider.client, gigaChatTLSClientCacheAuth, gigaChatAuthTLSKeyConfig(authConfig.keyConfig))
 	if err != nil {
 		return gigaChatCachedToken{}, newGigaChatConfigurationError(err.Error())
 	}
@@ -505,7 +505,7 @@ func (provider *GigaChatProvider) requestGigaChatPasswordToken(ctx *schemas.Bifr
 	req.Header.Set(gigaChatUserAgentHeader, gigaChatUserAgent)
 	req.Header.Set("Authorization", "Basic "+base64.StdEncoding.EncodeToString([]byte(authConfig.user+":"+authConfig.password)))
 
-	client, err := buildGigaChatTLSClient(provider.client, authConfig.keyConfig)
+	client, err := provider.getGigaChatTLSClient(provider.client, gigaChatTLSClientCacheAuth, gigaChatAuthTLSKeyConfig(authConfig.keyConfig))
 	if err != nil {
 		return gigaChatCachedToken{}, newGigaChatConfigurationError(err.Error())
 	}

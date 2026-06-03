@@ -27,6 +27,7 @@ func TestGigaChatOAuthTokenClient(t *testing.T) {
 	t.Run("ParsesMillisecondsExpiresAt", testGigaChatOAuthParsesMillisecondsExpiresAt)
 	t.Run("CachesTokenBeforeLeeway", testGigaChatOAuthCachesTokenBeforeLeeway)
 	t.Run("RefreshesTokenInsideLeeway", testGigaChatOAuthRefreshesTokenInsideLeeway)
+	t.Run("IgnoresClientCertificate", testGigaChatOAuthIgnoresClientCertificate)
 	t.Run("HandlesProviderErrors", testGigaChatOAuthHandlesProviderErrors)
 	t.Run("HandlesMalformedResponses", testGigaChatOAuthHandlesMalformedResponses)
 	t.Run("MissingCredentials", testGigaChatOAuthMissingCredentials)
@@ -40,6 +41,7 @@ func TestGigaChatPasswordTokenClient(t *testing.T) {
 	t.Run("ParsesSecondsExpiresAt", testGigaChatPasswordParsesSecondsExpiresAt)
 	t.Run("CachesTokenBeforeLeeway", testGigaChatPasswordCachesTokenBeforeLeeway)
 	t.Run("RefreshesTokenInsideLeeway", testGigaChatPasswordRefreshesTokenInsideLeeway)
+	t.Run("IgnoresClientCertificate", testGigaChatPasswordIgnoresClientCertificate)
 	t.Run("RejectsExpiredToken", testGigaChatPasswordRejectsExpiredToken)
 	t.Run("HandlesProviderErrors", testGigaChatPasswordHandlesProviderErrors)
 	t.Run("HandlesMalformedResponses", testGigaChatPasswordHandlesMalformedResponses)
@@ -521,6 +523,54 @@ func testGigaChatPasswordRequestShape(t *testing.T) {
 		t.Fatalf("getPasswordAccessToken returned error: %v", bifrostErr)
 	}
 	if token != "password-token-1" {
+		t.Fatalf("token mismatch: got %q", token)
+	}
+}
+
+func testGigaChatOAuthIgnoresClientCertificate(t *testing.T) {
+	t.Parallel()
+
+	now := time.Unix(1_700_000_000, 0)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"access_token":"oauth-token","expires_at":` + formatUnix(now.Add(30*time.Minute)) + `}`))
+	}))
+	defer server.Close()
+
+	provider := newTestGigaChatProvider(t, func() time.Time { return now })
+	key := testGigaChatOAuthKey(server.URL, "", "test-credentials")
+	key.GigaChatKeyConfig.CertFile = "/does/not/exist/client.pem"
+	key.GigaChatKeyConfig.KeyFile = "/does/not/exist/client.key"
+
+	token, bifrostErr := provider.getOAuthAccessToken(testBifrostContext(), key)
+	if bifrostErr != nil {
+		t.Fatalf("getOAuthAccessToken returned error: %v", bifrostErr)
+	}
+	if token != "oauth-token" {
+		t.Fatalf("token mismatch: got %q", token)
+	}
+}
+
+func testGigaChatPasswordIgnoresClientCertificate(t *testing.T) {
+	t.Parallel()
+
+	now := time.Unix(1_700_000_000, 0)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"tok":"password-token","exp":` + formatUnixMilli(now.Add(30*time.Minute)) + `}`))
+	}))
+	defer server.Close()
+
+	provider := newTestGigaChatProvider(t, func() time.Time { return now })
+	key := testGigaChatPasswordKey(server.URL, "test-user", "test-password")
+	key.GigaChatKeyConfig.CertFile = "/does/not/exist/client.pem"
+	key.GigaChatKeyConfig.KeyFile = "/does/not/exist/client.key"
+
+	token, bifrostErr := provider.getPasswordAccessToken(testBifrostContext(), key)
+	if bifrostErr != nil {
+		t.Fatalf("getPasswordAccessToken returned error: %v", bifrostErr)
+	}
+	if token != "password-token" {
 		t.Fatalf("token mismatch: got %q", token)
 	}
 }
