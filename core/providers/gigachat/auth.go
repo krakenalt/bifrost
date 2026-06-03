@@ -385,6 +385,8 @@ func buildGigaChatOAuthCacheKey(authConfig gigaChatOAuthConfig) string {
 	hash.Write([]byte(authConfig.scope))
 	hash.Write([]byte{0})
 	hash.Write([]byte(authConfig.credentials))
+	hash.Write([]byte{0})
+	hash.Write([]byte(gigaChatAuthTLSMaterialFingerprint(authConfig.keyConfig)))
 	return hex.EncodeToString(hash.Sum(nil))
 }
 
@@ -421,6 +423,8 @@ func buildGigaChatPasswordAuthCacheKey(authConfig gigaChatPasswordAuthConfig) st
 	hash.Write([]byte(authConfig.user))
 	hash.Write([]byte{0})
 	hash.Write([]byte(authConfig.password))
+	hash.Write([]byte{0})
+	hash.Write([]byte(gigaChatAuthTLSMaterialFingerprint(authConfig.keyConfig)))
 	return hex.EncodeToString(hash.Sum(nil))
 }
 

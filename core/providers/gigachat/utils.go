@@ -223,6 +223,10 @@ func gigaChatTLSMaterialFingerprint(keyConfig *schemas.GigaChatKeyConfig) string
 	return hex.EncodeToString(hash.Sum(nil))
 }
 
+func gigaChatAuthTLSMaterialFingerprint(keyConfig *schemas.GigaChatKeyConfig) string {
+	return gigaChatTLSMaterialFingerprint(gigaChatAuthTLSKeyConfig(keyConfig))
+}
+
 func gigaChatAuthTLSKeyConfig(keyConfig *schemas.GigaChatKeyConfig) *schemas.GigaChatKeyConfig {
 	if keyConfig == nil || strings.TrimSpace(keyConfig.CABundleFile) == "" {
 		return nil

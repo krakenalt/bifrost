@@ -26,6 +26,7 @@ func TestGigaChatOAuthTokenClient(t *testing.T) {
 	t.Run("RequestShapeAndDefaultScope", testGigaChatOAuthRequestShapeAndDefaultScope)
 	t.Run("ParsesMillisecondsExpiresAt", testGigaChatOAuthParsesMillisecondsExpiresAt)
 	t.Run("CachesTokenBeforeLeeway", testGigaChatOAuthCachesTokenBeforeLeeway)
+	t.Run("CacheIncludesCABundle", testGigaChatOAuthCacheIncludesCABundle)
 	t.Run("RefreshesTokenInsideLeeway", testGigaChatOAuthRefreshesTokenInsideLeeway)
 	t.Run("IgnoresClientCertificate", testGigaChatOAuthIgnoresClientCertificate)
 	t.Run("HandlesProviderErrors", testGigaChatOAuthHandlesProviderErrors)
@@ -40,6 +41,7 @@ func TestGigaChatPasswordTokenClient(t *testing.T) {
 	t.Run("RequestShape", testGigaChatPasswordRequestShape)
 	t.Run("ParsesSecondsExpiresAt", testGigaChatPasswordParsesSecondsExpiresAt)
 	t.Run("CachesTokenBeforeLeeway", testGigaChatPasswordCachesTokenBeforeLeeway)
+	t.Run("CacheIncludesCABundle", testGigaChatPasswordCacheIncludesCABundle)
 	t.Run("RefreshesTokenInsideLeeway", testGigaChatPasswordRefreshesTokenInsideLeeway)
 	t.Run("IgnoresClientCertificate", testGigaChatPasswordIgnoresClientCertificate)
 	t.Run("RejectsExpiredToken", testGigaChatPasswordRejectsExpiredToken)
@@ -672,6 +674,50 @@ func testGigaChatPasswordCachesTokenBeforeLeeway(t *testing.T) {
 	}
 }
 
+func testGigaChatPasswordCacheIncludesCABundle(t *testing.T) {
+	t.Parallel()
+
+	now := time.Unix(1_700_000_000, 0)
+	var requestCount atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		count := requestCount.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"tok":"password-token-` + formatInt32(count) + `","exp":` + formatUnixMilli(now.Add(30*time.Minute)) + `}`))
+	}))
+	defer server.Close()
+
+	caBundlePEM1, _ := generateGigaChatTestCertificate(t)
+	caBundlePEM2, _ := generateGigaChatTestCertificate(t)
+	caBundleFile1 := writeGigaChatTestFile(t, "ca-1.pem", caBundlePEM1)
+	caBundleFile2 := writeGigaChatTestFile(t, "ca-2.pem", caBundlePEM2)
+
+	provider := newTestGigaChatProvider(t, func() time.Time { return now })
+	key1 := testGigaChatPasswordKey(server.URL, "test-user", "test-password")
+	key1.GigaChatKeyConfig.CABundleFile = caBundleFile1
+	key2 := testGigaChatPasswordKey(server.URL, "test-user", "test-password")
+	key2.GigaChatKeyConfig.CABundleFile = caBundleFile2
+
+	firstToken, bifrostErr := provider.getPasswordAccessToken(testBifrostContext(), key1)
+	if bifrostErr != nil {
+		t.Fatalf("first getPasswordAccessToken returned error: %v", bifrostErr)
+	}
+	secondToken, bifrostErr := provider.getPasswordAccessToken(testBifrostContext(), key2)
+	if bifrostErr != nil {
+		t.Fatalf("second getPasswordAccessToken returned error: %v", bifrostErr)
+	}
+	thirdToken, bifrostErr := provider.getPasswordAccessToken(testBifrostContext(), key1)
+	if bifrostErr != nil {
+		t.Fatalf("third getPasswordAccessToken returned error: %v", bifrostErr)
+	}
+
+	if firstToken != "password-token-1" || secondToken != "password-token-2" || thirdToken != "password-token-1" {
+		t.Fatalf("cache partition mismatch: first=%q second=%q third=%q", firstToken, secondToken, thirdToken)
+	}
+	if requestCount.Load() != 2 {
+		t.Fatalf("request count mismatch: got %d, want 2", requestCount.Load())
+	}
+}
+
 func testGigaChatPasswordRefreshesTokenInsideLeeway(t *testing.T) {
 	t.Parallel()
 
@@ -937,6 +983,50 @@ func testGigaChatOAuthCachesTokenBeforeLeeway(t *testing.T) {
 	}
 	if requestCount.Load() != 1 {
 		t.Fatalf("request count mismatch: got %d, want 1", requestCount.Load())
+	}
+}
+
+func testGigaChatOAuthCacheIncludesCABundle(t *testing.T) {
+	t.Parallel()
+
+	now := time.Unix(1_700_000_000, 0)
+	var requestCount atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		count := requestCount.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"access_token":"token-` + formatInt32(count) + `","expires_at":` + formatUnix(now.Add(30*time.Minute)) + `}`))
+	}))
+	defer server.Close()
+
+	caBundlePEM1, _ := generateGigaChatTestCertificate(t)
+	caBundlePEM2, _ := generateGigaChatTestCertificate(t)
+	caBundleFile1 := writeGigaChatTestFile(t, "ca-1.pem", caBundlePEM1)
+	caBundleFile2 := writeGigaChatTestFile(t, "ca-2.pem", caBundlePEM2)
+
+	provider := newTestGigaChatProvider(t, func() time.Time { return now })
+	key1 := testGigaChatOAuthKey(server.URL, "", "test-credentials")
+	key1.GigaChatKeyConfig.CABundleFile = caBundleFile1
+	key2 := testGigaChatOAuthKey(server.URL, "", "test-credentials")
+	key2.GigaChatKeyConfig.CABundleFile = caBundleFile2
+
+	firstToken, bifrostErr := provider.getOAuthAccessToken(testBifrostContext(), key1)
+	if bifrostErr != nil {
+		t.Fatalf("first getOAuthAccessToken returned error: %v", bifrostErr)
+	}
+	secondToken, bifrostErr := provider.getOAuthAccessToken(testBifrostContext(), key2)
+	if bifrostErr != nil {
+		t.Fatalf("second getOAuthAccessToken returned error: %v", bifrostErr)
+	}
+	thirdToken, bifrostErr := provider.getOAuthAccessToken(testBifrostContext(), key1)
+	if bifrostErr != nil {
+		t.Fatalf("third getOAuthAccessToken returned error: %v", bifrostErr)
+	}
+
+	if firstToken != "token-1" || secondToken != "token-2" || thirdToken != "token-1" {
+		t.Fatalf("cache partition mismatch: first=%q second=%q third=%q", firstToken, secondToken, thirdToken)
+	}
+	if requestCount.Load() != 2 {
+		t.Fatalf("request count mismatch: got %d, want 2", requestCount.Load())
 	}
 }
 
