@@ -85,6 +85,46 @@ func TestGigaChatChatCompletionFileDataDecoding(t *testing.T) {
 	})
 }
 
+func TestGigaChatChatCompletionStreamToolCallIndex(t *testing.T) {
+	t.Parallel()
+
+	functionsStateID := "call-weather"
+	response := ToBifrostChatStreamResponse(schemas.GigaChat, &GigaChatChatStreamResponse{
+		Model: "GigaChat",
+		Choices: []GigaChatChatStreamChoice{{
+			Index: 2,
+			Delta: &GigaChatChatStreamDelta{
+				FunctionCall: &GigaChatFunctionCall{
+					Name:      "get_weather",
+					Arguments: json.RawMessage(`{"city":"Moscow"}`),
+				},
+				FunctionsStateID: &functionsStateID,
+			},
+		}},
+	})
+	if response == nil || len(response.Choices) != 1 || response.Choices[0].ChatStreamResponseChoice == nil {
+		t.Fatalf("stream response mismatch: %#v", response)
+	}
+	choice := response.Choices[0]
+	if choice.Index != 2 {
+		t.Fatalf("choice index mismatch: got %d, want 2", choice.Index)
+	}
+	delta := choice.ChatStreamResponseChoice.Delta
+	if delta == nil || len(delta.ToolCalls) != 1 {
+		t.Fatalf("tool call delta mismatch: %#v", delta)
+	}
+	toolCall := delta.ToolCalls[0]
+	if toolCall.Index != 0 {
+		t.Fatalf("tool call index mismatch: got %d, want 0", toolCall.Index)
+	}
+	if toolCall.ID == nil || *toolCall.ID != functionsStateID {
+		t.Fatalf("tool call id mismatch: %#v", toolCall.ID)
+	}
+	if toolCall.Function.Name == nil || *toolCall.Function.Name != "get_weather" || toolCall.Function.Arguments != `{"city":"Moscow"}` {
+		t.Fatalf("tool call function mismatch: %#v", toolCall.Function)
+	}
+}
+
 func testGigaChatChatCompletion(t *testing.T) {
 	t.Parallel()
 
