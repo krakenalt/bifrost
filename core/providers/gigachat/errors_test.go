@@ -24,6 +24,10 @@ func testGigaChatErrors(t *testing.T) {
 	t.Run("RedactsTextPayloads", testGigaChatErrorRedactsTextPayloads)
 }
 
+func TestGigaChatErrors(t *testing.T) {
+	testGigaChatErrors(t)
+}
+
 func testGigaChatErrorParsesCommonPayloads(t *testing.T) {
 	t.Parallel()
 
