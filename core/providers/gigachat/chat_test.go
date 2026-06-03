@@ -16,6 +16,10 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
+func TestGigaChatChatCompletion(t *testing.T) {
+	testGigaChatChatCompletion(t)
+}
+
 func testGigaChatChatCompletion(t *testing.T) {
 	t.Parallel()
 
