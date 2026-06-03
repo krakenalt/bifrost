@@ -20,6 +20,71 @@ func TestGigaChatChatCompletion(t *testing.T) {
 	testGigaChatChatCompletion(t)
 }
 
+func TestGigaChatChatCompletionFileDataDecoding(t *testing.T) {
+	t.Parallel()
+
+	t.Run("RawTextFileData", func(t *testing.T) {
+		t.Parallel()
+
+		filename := "note.txt"
+		fileType := "text/plain"
+		fileData := "test"
+		upload, err := gigaChatChatFileUpload(3, &schemas.ChatInputFile{
+			Filename: &filename,
+			FileData: &fileData,
+			FileType: &fileType,
+		})
+		if err != nil {
+			t.Fatalf("gigaChatChatFileUpload returned error: %v", err)
+		}
+		if string(upload.file) != "test" {
+			t.Fatalf("raw text file_data was not preserved: %q", string(upload.file))
+		}
+		if upload.filename != "note.txt" || upload.contentType != "text/plain" {
+			t.Fatalf("upload metadata mismatch: %#v", upload)
+		}
+	})
+
+	t.Run("TextDataURLBase64", func(t *testing.T) {
+		t.Parallel()
+
+		filename := "note.txt"
+		fileData := "data:text/plain;base64,dGVzdA=="
+		upload, err := gigaChatChatFileUpload(4, &schemas.ChatInputFile{
+			Filename: &filename,
+			FileData: &fileData,
+		})
+		if err != nil {
+			t.Fatalf("gigaChatChatFileUpload returned error: %v", err)
+		}
+		if string(upload.file) != "test" {
+			t.Fatalf("base64 data URL was not decoded: %q", string(upload.file))
+		}
+		if !strings.HasPrefix(upload.contentType, "text/plain") {
+			t.Fatalf("content type mismatch: %q", upload.contentType)
+		}
+	})
+
+	t.Run("NonTextInvalidBase64IncludesBlockIndex", func(t *testing.T) {
+		t.Parallel()
+
+		filename := "document.pdf"
+		fileType := "application/pdf"
+		fileData := "not-base64!"
+		_, err := gigaChatChatFileUpload(7, &schemas.ChatInputFile{
+			Filename: &filename,
+			FileData: &fileData,
+			FileType: &fileType,
+		})
+		if err == nil {
+			t.Fatal("expected non-text invalid base64 to fail")
+		}
+		if !strings.Contains(err.Error(), "content block 7") || !strings.Contains(err.Error(), "file_data must be a base64 data URL or base64-encoded content") {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+}
+
 func testGigaChatChatCompletion(t *testing.T) {
 	t.Parallel()
 
