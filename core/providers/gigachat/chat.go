@@ -161,10 +161,12 @@ func ToBifrostChatStreamResponse(providerName schemas.ModelProvider, response *G
 }
 
 func toBifrostGigaChatChatStreamObject(object string) string {
-	if strings.TrimSpace(object) == "" || object == "chat.completion" {
+	switch strings.TrimSpace(object) {
+	case "", "chat.completion", "chat.completions":
 		return "chat.completion.chunk"
+	default:
+		return object
 	}
-	return object
 }
 
 func handleGigaChatChatStreamResponse(providerName schemas.ModelProvider) func([]byte, *schemas.BifrostChatResponse, []byte, bool, bool) (interface{}, interface{}, *schemas.BifrostError) {
