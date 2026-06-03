@@ -679,7 +679,6 @@ func (provider *GigaChatProvider) responsesStreamWithRefresh(
 	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
 
 	activeClient := providerUtils.PrepareResponseStreaming(ctx, client, resp)
-	startTime := time.Now()
 	if err := activeClient.Do(req, resp); err != nil {
 		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
 		if errors.Is(err, context.Canceled) {
@@ -697,6 +696,7 @@ func (provider *GigaChatProvider) responsesStreamWithRefresh(
 		}
 		return nil, enrichGigaChatError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderDoRequest, err), jsonData, nil, sendBackRawRequest, sendBackRawResponse)
 	}
+	startTime := time.Now()
 
 	providerName := provider.GetProviderKey()
 	providerResponseHeaders := providerUtils.ExtractProviderResponseHeaders(resp)
