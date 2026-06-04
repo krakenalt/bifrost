@@ -249,8 +249,6 @@ func gigaChatAuthTLSKeyConfig(keyConfig *schemas.GigaChatKeyConfig) *schemas.Gig
 	}
 	authKeyConfig := &schemas.GigaChatKeyConfig{
 		CABundleFile: strings.TrimSpace(keyConfig.CABundleFile),
-		CertFile:     strings.TrimSpace(keyConfig.CertFile),
-		KeyFile:      strings.TrimSpace(keyConfig.KeyFile),
 	}
 	if !gigaChatKeyConfigHasTLSMaterial(authKeyConfig) {
 		return nil

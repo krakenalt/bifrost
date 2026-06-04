@@ -72,12 +72,14 @@ func TestGigaChatKeyConfigAuthMaterial(t *testing.T) {
 		config   *schemas.GigaChatKeyConfig
 		wantAuth bool
 		wantTLS  bool
+		wantMTLS bool
 	}{
 		{
 			name:     "NilConfig",
 			config:   nil,
 			wantAuth: false,
 			wantTLS:  false,
+			wantMTLS: false,
 		},
 		{
 			name: "Credentials",
@@ -86,6 +88,7 @@ func TestGigaChatKeyConfigAuthMaterial(t *testing.T) {
 			},
 			wantAuth: true,
 			wantTLS:  false,
+			wantMTLS: false,
 		},
 		{
 			name: "AccessToken",
@@ -94,6 +97,7 @@ func TestGigaChatKeyConfigAuthMaterial(t *testing.T) {
 			},
 			wantAuth: true,
 			wantTLS:  false,
+			wantMTLS: false,
 		},
 		{
 			name: "UserPassword",
@@ -103,6 +107,7 @@ func TestGigaChatKeyConfigAuthMaterial(t *testing.T) {
 			},
 			wantAuth: true,
 			wantTLS:  false,
+			wantMTLS: false,
 		},
 		{
 			name: "ClientCertificatePair",
@@ -112,6 +117,7 @@ func TestGigaChatKeyConfigAuthMaterial(t *testing.T) {
 			},
 			wantAuth: false,
 			wantTLS:  true,
+			wantMTLS: true,
 		},
 		{
 			name: "CABundle",
@@ -120,6 +126,7 @@ func TestGigaChatKeyConfigAuthMaterial(t *testing.T) {
 			},
 			wantAuth: false,
 			wantTLS:  true,
+			wantMTLS: false,
 		},
 		{
 			name: "CredentialsWithTLS",
@@ -131,6 +138,7 @@ func TestGigaChatKeyConfigAuthMaterial(t *testing.T) {
 			},
 			wantAuth: true,
 			wantTLS:  true,
+			wantMTLS: true,
 		},
 	}
 
@@ -144,6 +152,9 @@ func TestGigaChatKeyConfigAuthMaterial(t *testing.T) {
 			}
 			if got := testCase.config.HasTLSMaterial(); got != testCase.wantTLS {
 				t.Fatalf("HasTLSMaterial mismatch: got %v, want %v", got, testCase.wantTLS)
+			}
+			if got := testCase.config.HasClientCertificateMaterial(); got != testCase.wantMTLS {
+				t.Fatalf("HasClientCertificateMaterial mismatch: got %v, want %v", got, testCase.wantMTLS)
 			}
 		})
 	}

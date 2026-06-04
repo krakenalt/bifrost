@@ -47,12 +47,25 @@ describe("modelProviderKeySchema GigaChat auth", () => {
 		expect(result.success).toBe(true);
 	});
 
-	it("rejects TLS material without bearer auth", () => {
+	it("accepts mTLS client certificate auth without bearer auth", () => {
 		const result = modelProviderKeySchema.safeParse({
 			...baseKey,
 			gigachat_key_config: {
+				_auth_type: "mtls",
 				cert_file: "/secure/client.pem",
 				key_file: "/secure/client.key",
+				ca_bundle_file: "/secure/ca.pem",
+			},
+		});
+
+		expect(result.success).toBe(true);
+	});
+
+	it("rejects CA bundle without bearer or client certificate auth", () => {
+		const result = modelProviderKeySchema.safeParse({
+			...baseKey,
+			gigachat_key_config: {
+				_auth_type: "mtls",
 				ca_bundle_file: "/secure/ca.pem",
 			},
 		});
@@ -60,7 +73,7 @@ describe("modelProviderKeySchema GigaChat auth", () => {
 		expect(result.success).toBe(false);
 		if (result.success) return;
 		expect(result.error.issues[0]?.message).toBe(
-			"GigaChat credentials, access token, user/password, or key value access token is required",
+			"GigaChat credentials, access token, user/password, mTLS certificate pair, or key value access token is required",
 		);
 	});
 
