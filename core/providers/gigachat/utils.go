@@ -23,6 +23,8 @@ var (
 	gigaChatAuthSchemePattern          = regexp.MustCompile(`(?i)\b(bearer|basic)\s+[^ \t\r\n"',}]+`)
 	gigaChatPrivateKeyPattern          = regexp.MustCompile(`(?s)-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----`)
 	gigaChatSensitiveAssignmentPattern = regexp.MustCompile(`(?i)(["']?)\b(authorization|access_token|credentials|username|password|cert_file|key_file|ca_bundle_file|private_key|client_key|client_secret|refresh_token)\b(["']?)(\s*[:=]\s*)("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^ \t\r\n"',}]+)`)
+	gigaChatUserAssignmentPattern      = regexp.MustCompile(`(?i)(["']?)\b(user)\b(["']?)(\s*[:=]\s*)("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^ \t\r\n"',}]+)`)
+	gigaChatAuthContextTextPattern     = regexp.MustCompile(`(?i)(\b(bearer|basic)\s+|\b(authorization|access_token|credentials|username|password|cert_file|key_file|ca_bundle_file|private_key|client_key|client_secret|refresh_token)\b\s*[:=])`)
 )
 
 const (
@@ -343,9 +345,10 @@ func redactGigaChatJSONValueInContext(value interface{}, inGigaChatKeyConfig boo
 	changed := false
 	switch typed := value.(type) {
 	case map[string]interface{}:
+		authFieldContext := inGigaChatKeyConfig || hasGigaChatAuthSensitiveField(typed)
 		for key, child := range typed {
 			childInGigaChatKeyConfig := inGigaChatKeyConfig || strings.EqualFold(strings.TrimSpace(key), "gigachat_key_config")
-			if isGigaChatSensitiveField(key, inGigaChatKeyConfig) {
+			if isGigaChatSensitiveField(key, authFieldContext) {
 				typed[key] = "<redacted>"
 				changed = true
 				continue
@@ -380,6 +383,15 @@ func redactGigaChatJSONValueInContext(value interface{}, inGigaChatKeyConfig boo
 	return changed
 }
 
+func hasGigaChatAuthSensitiveField(fields map[string]interface{}) bool {
+	for fieldName := range fields {
+		if isGigaChatSensitiveField(fieldName, false) {
+			return true
+		}
+	}
+	return false
+}
+
 func isGigaChatSensitiveField(fieldName string, inGigaChatKeyConfig bool) bool {
 	switch strings.ToLower(strings.TrimSpace(fieldName)) {
 	case "authorization", "access_token", "credentials", "username", "password", "cert_file", "key_file", "ca_bundle_file", "private_key", "client_key", "client_secret", "refresh_token":
@@ -400,8 +412,16 @@ func redactGigaChatSensitiveText(text string) string {
 }
 
 func redactGigaChatSensitiveAssignments(text string) string {
-	return gigaChatSensitiveAssignmentPattern.ReplaceAllStringFunc(text, func(match string) string {
-		parts := gigaChatSensitiveAssignmentPattern.FindStringSubmatch(match)
+	redacted := redactGigaChatAssignmentsWithPattern(text, gigaChatSensitiveAssignmentPattern)
+	if gigaChatAuthContextTextPattern.MatchString(text) {
+		redacted = redactGigaChatAssignmentsWithPattern(redacted, gigaChatUserAssignmentPattern)
+	}
+	return redacted
+}
+
+func redactGigaChatAssignmentsWithPattern(text string, pattern *regexp.Regexp) string {
+	return pattern.ReplaceAllStringFunc(text, func(match string) string {
+		parts := pattern.FindStringSubmatch(match)
 		if len(parts) != 6 {
 			return "<redacted>"
 		}
