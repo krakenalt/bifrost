@@ -187,7 +187,11 @@ func (provider *GigaChatProvider) getGigaChatTLSClient(baseClient *fasthttp.Clie
 		return buildGigaChatTLSClient(baseClient, keyConfig)
 	}
 
-	cacheKey := cacheKind + ":" + gigaChatTLSMaterialFingerprint(keyConfig)
+	fingerprint, err := gigaChatTLSMaterialFingerprint(keyConfig)
+	if err != nil {
+		return nil, err
+	}
+	cacheKey := cacheKind + ":" + fingerprint
 	provider.tlsClientCache.mu.Lock()
 	defer provider.tlsClientCache.mu.Unlock()
 
@@ -203,23 +207,37 @@ func (provider *GigaChatProvider) getGigaChatTLSClient(baseClient *fasthttp.Clie
 	return client, nil
 }
 
-func gigaChatTLSMaterialFingerprint(keyConfig *schemas.GigaChatKeyConfig) string {
+func gigaChatTLSMaterialFingerprint(keyConfig *schemas.GigaChatKeyConfig) (string, error) {
 	if keyConfig == nil {
-		return ""
+		return "", nil
 	}
 	hash := sha256.New()
-	for _, value := range []string{
-		strings.TrimSpace(keyConfig.CABundleFile),
-		strings.TrimSpace(keyConfig.CertFile),
-		strings.TrimSpace(keyConfig.KeyFile),
+	for _, material := range []struct {
+		field string
+		path  string
+	}{
+		{field: "ca_bundle_file", path: strings.TrimSpace(keyConfig.CABundleFile)},
+		{field: "cert_file", path: strings.TrimSpace(keyConfig.CertFile)},
+		{field: "key_file", path: strings.TrimSpace(keyConfig.KeyFile)},
 	} {
 		_, _ = hash.Write([]byte{0})
-		_, _ = hash.Write([]byte(value))
+		_, _ = hash.Write([]byte(material.field))
+		_, _ = hash.Write([]byte{0})
+		_, _ = hash.Write([]byte(material.path))
+		if material.path == "" {
+			continue
+		}
+		contents, err := os.ReadFile(material.path)
+		if err != nil {
+			return "", fmt.Errorf("failed to read gigachat_key_config.%s for TLS cache key: %w", material.field, err)
+		}
+		_, _ = hash.Write([]byte{0})
+		_, _ = hash.Write(contents)
 	}
-	return hex.EncodeToString(hash.Sum(nil))
+	return hex.EncodeToString(hash.Sum(nil)), nil
 }
 
-func gigaChatAuthTLSMaterialFingerprint(keyConfig *schemas.GigaChatKeyConfig) string {
+func gigaChatAuthTLSMaterialFingerprint(keyConfig *schemas.GigaChatKeyConfig) (string, error) {
 	return gigaChatTLSMaterialFingerprint(gigaChatAuthTLSKeyConfig(keyConfig))
 }
 
