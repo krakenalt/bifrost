@@ -498,6 +498,9 @@ func testGigaChatPasswordRequestShape(t *testing.T) {
 		if r.URL.Path != "/api/v1/token" {
 			t.Errorf("path mismatch: got %s", r.URL.Path)
 		}
+		if contentType := r.Header.Get("Content-Type"); !strings.Contains(contentType, "application/x-www-form-urlencoded") {
+			t.Errorf("content type mismatch: got %q", contentType)
+		}
 		if accept := r.Header.Get("Accept"); accept != "application/json" {
 			t.Errorf("accept mismatch: got %q", accept)
 		}

@@ -521,6 +521,7 @@ func (provider *GigaChatProvider) requestGigaChatPasswordToken(ctx *schemas.Bifr
 
 	req.SetRequestURI(authConfig.tokenURL)
 	req.Header.SetMethod(http.MethodPost)
+	req.Header.SetContentType("application/x-www-form-urlencoded")
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set(gigaChatUserAgentHeader, gigaChatUserAgent)
 	req.Header.Set("Authorization", "Basic "+base64.StdEncoding.EncodeToString([]byte(authConfig.user+":"+authConfig.password)))
