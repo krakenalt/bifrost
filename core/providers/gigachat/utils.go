@@ -224,10 +224,18 @@ func gigaChatAuthTLSMaterialFingerprint(keyConfig *schemas.GigaChatKeyConfig) st
 }
 
 func gigaChatAuthTLSKeyConfig(keyConfig *schemas.GigaChatKeyConfig) *schemas.GigaChatKeyConfig {
-	if keyConfig == nil || strings.TrimSpace(keyConfig.CABundleFile) == "" {
+	if keyConfig == nil {
 		return nil
 	}
-	return &schemas.GigaChatKeyConfig{CABundleFile: strings.TrimSpace(keyConfig.CABundleFile)}
+	authKeyConfig := &schemas.GigaChatKeyConfig{
+		CABundleFile: strings.TrimSpace(keyConfig.CABundleFile),
+		CertFile:     strings.TrimSpace(keyConfig.CertFile),
+		KeyFile:      strings.TrimSpace(keyConfig.KeyFile),
+	}
+	if !gigaChatKeyConfigHasTLSMaterial(authKeyConfig) {
+		return nil
+	}
+	return authKeyConfig
 }
 
 func gigaChatKeyConfigHasTLSMaterial(keyConfig *schemas.GigaChatKeyConfig) bool {

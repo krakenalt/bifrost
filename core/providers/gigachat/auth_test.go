@@ -2,7 +2,10 @@ package gigachat
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/base64"
+	"encoding/pem"
 	"io"
 	"net"
 	"net/http"
@@ -28,7 +31,7 @@ func TestGigaChatOAuthTokenClient(t *testing.T) {
 	t.Run("CachesTokenBeforeLeeway", testGigaChatOAuthCachesTokenBeforeLeeway)
 	t.Run("CacheIncludesCABundle", testGigaChatOAuthCacheIncludesCABundle)
 	t.Run("RefreshesTokenInsideLeeway", testGigaChatOAuthRefreshesTokenInsideLeeway)
-	t.Run("IgnoresClientCertificate", testGigaChatOAuthIgnoresClientCertificate)
+	t.Run("UsesClientCertificate", testGigaChatOAuthUsesClientCertificate)
 	t.Run("HandlesProviderErrors", testGigaChatOAuthHandlesProviderErrors)
 	t.Run("HandlesMalformedResponses", testGigaChatOAuthHandlesMalformedResponses)
 	t.Run("MissingCredentials", testGigaChatOAuthMissingCredentials)
@@ -43,7 +46,7 @@ func TestGigaChatPasswordTokenClient(t *testing.T) {
 	t.Run("CachesTokenBeforeLeeway", testGigaChatPasswordCachesTokenBeforeLeeway)
 	t.Run("CacheIncludesCABundle", testGigaChatPasswordCacheIncludesCABundle)
 	t.Run("RefreshesTokenInsideLeeway", testGigaChatPasswordRefreshesTokenInsideLeeway)
-	t.Run("IgnoresClientCertificate", testGigaChatPasswordIgnoresClientCertificate)
+	t.Run("UsesClientCertificate", testGigaChatPasswordUsesClientCertificate)
 	t.Run("RejectsExpiredToken", testGigaChatPasswordRejectsExpiredToken)
 	t.Run("HandlesProviderErrors", testGigaChatPasswordHandlesProviderErrors)
 	t.Run("HandlesMalformedResponses", testGigaChatPasswordHandlesMalformedResponses)
@@ -529,20 +532,36 @@ func testGigaChatPasswordRequestShape(t *testing.T) {
 	}
 }
 
-func testGigaChatOAuthIgnoresClientCertificate(t *testing.T) {
+func testGigaChatOAuthUsesClientCertificate(t *testing.T) {
 	t.Parallel()
 
 	now := time.Unix(1_700_000_000, 0)
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	server, caBundleFile, certFile, keyFile := newGigaChatMTLSTokenServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v2/oauth" {
+			t.Errorf("unexpected path: %s", r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		if r.TLS == nil || len(r.TLS.PeerCertificates) == 0 {
+			t.Error("expected client certificate")
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"access_token":"oauth-token","expires_at":` + formatUnix(now.Add(30*time.Minute)) + `}`))
 	}))
-	defer server.Close()
 
 	provider := newTestGigaChatProvider(t, func() time.Time { return now })
-	key := testGigaChatOAuthKey(server.URL, "", "test-credentials")
-	key.GigaChatKeyConfig.CertFile = "/does/not/exist/client.pem"
-	key.GigaChatKeyConfig.KeyFile = "/does/not/exist/client.key"
+	keyWithoutCert := testGigaChatOAuthKey(server.URL+"/api/v2/oauth", "", "test-credentials")
+	keyWithoutCert.GigaChatKeyConfig.CABundleFile = caBundleFile
+	if _, bifrostErr := provider.getOAuthAccessToken(testBifrostContext(), keyWithoutCert); bifrostErr == nil {
+		t.Fatal("expected OAuth token request without client certificate to fail")
+	}
+
+	key := testGigaChatOAuthKey(server.URL+"/api/v2/oauth", "", "test-credentials")
+	key.GigaChatKeyConfig.CABundleFile = caBundleFile
+	key.GigaChatKeyConfig.CertFile = certFile
+	key.GigaChatKeyConfig.KeyFile = keyFile
 
 	token, bifrostErr := provider.getOAuthAccessToken(testBifrostContext(), key)
 	if bifrostErr != nil {
@@ -553,20 +572,36 @@ func testGigaChatOAuthIgnoresClientCertificate(t *testing.T) {
 	}
 }
 
-func testGigaChatPasswordIgnoresClientCertificate(t *testing.T) {
+func testGigaChatPasswordUsesClientCertificate(t *testing.T) {
 	t.Parallel()
 
 	now := time.Unix(1_700_000_000, 0)
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	server, caBundleFile, certFile, keyFile := newGigaChatMTLSTokenServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/token" {
+			t.Errorf("unexpected path: %s", r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		if r.TLS == nil || len(r.TLS.PeerCertificates) == 0 {
+			t.Error("expected client certificate")
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"tok":"password-token","exp":` + formatUnixMilli(now.Add(30*time.Minute)) + `}`))
 	}))
-	defer server.Close()
 
 	provider := newTestGigaChatProvider(t, func() time.Time { return now })
-	key := testGigaChatPasswordKey(server.URL, "test-user", "test-password")
-	key.GigaChatKeyConfig.CertFile = "/does/not/exist/client.pem"
-	key.GigaChatKeyConfig.KeyFile = "/does/not/exist/client.key"
+	keyWithoutCert := testGigaChatPasswordKey(server.URL+"/api", "test-user", "test-password")
+	keyWithoutCert.GigaChatKeyConfig.CABundleFile = caBundleFile
+	if _, bifrostErr := provider.getPasswordAccessToken(testBifrostContext(), keyWithoutCert); bifrostErr == nil {
+		t.Fatal("expected password token request without client certificate to fail")
+	}
+
+	key := testGigaChatPasswordKey(server.URL+"/api", "test-user", "test-password")
+	key.GigaChatKeyConfig.CABundleFile = caBundleFile
+	key.GigaChatKeyConfig.CertFile = certFile
+	key.GigaChatKeyConfig.KeyFile = keyFile
 
 	token, bifrostErr := provider.getPasswordAccessToken(testBifrostContext(), key)
 	if bifrostErr != nil {
@@ -575,6 +610,31 @@ func testGigaChatPasswordIgnoresClientCertificate(t *testing.T) {
 	if token != "password-token" {
 		t.Fatalf("token mismatch: got %q", token)
 	}
+}
+
+func newGigaChatMTLSTokenServer(t *testing.T, handler http.Handler) (*httptest.Server, string, string, string) {
+	t.Helper()
+
+	clientCertPEM, clientKeyPEM := generateGigaChatTestCertificate(t)
+	clientCAPool := x509.NewCertPool()
+	if !clientCAPool.AppendCertsFromPEM(clientCertPEM) {
+		t.Fatal("failed to parse client CA certificate")
+	}
+
+	server := httptest.NewUnstartedServer(handler)
+	server.TLS = &tls.Config{
+		MinVersion: tls.VersionTLS12,
+		ClientAuth: tls.RequireAndVerifyClientCert,
+		ClientCAs:  clientCAPool,
+	}
+	server.StartTLS()
+	t.Cleanup(server.Close)
+
+	serverCertPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: server.Certificate().Raw})
+	caBundleFile := writeGigaChatTestFile(t, "token-server-ca.pem", serverCertPEM)
+	certFile := writeGigaChatTestFile(t, "token-client.pem", clientCertPEM)
+	keyFile := writeGigaChatTestFile(t, "token-client.key", clientKeyPEM)
+	return server, caBundleFile, certFile, keyFile
 }
 
 func testGigaChatOAuthParsesMillisecondsExpiresAt(t *testing.T) {
